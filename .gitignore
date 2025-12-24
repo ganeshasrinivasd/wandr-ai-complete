@@ -16,6 +16,8 @@ node_modules/
 # Misc
 .DS_Store
 *.pem
+.idea/
+.vscode/
 
 # Debug
 npm-debug.log*
@@ -29,14 +31,13 @@ yarn-error.log*
 # Vercel
 .vercel
 
-# Typescript
+# TypeScript
 *.tsbuildinfo
 next-env.d.ts
 
-# MCP servers
+# MCP servers build
 mcp-servers/**/node_modules
 mcp-servers/**/dist
 
-# IDE
-.vscode/
-.idea/
+# Supabase
+.supabase/
