@@ -32,7 +32,7 @@
 
 **Tech stack:** Next.js 14, TypeScript, OpenAI + Anthropic APIs, Google Maps integration, real-time SSE streaming, Supabase. Clean, modular, production-ready code.
 
-**🚀 Built by [Ganesha Srinivas Damaraju](https://github.com/ganeshasrinivasd) — DMs open for collaboration, feedback, or if you're solving similar problems at scale.**
+**🚀 Built by [Ganesha Srinivas Damaraju](https://github.com/ganeshasrinivasd), [Zainab Bharucha](https://github.com/ZainabBharucha) — DMs open for collaboration, feedback, or if you're solving similar problems at scale.**
 
 ---
 
