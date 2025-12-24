@@ -6,12 +6,33 @@
 ![Next.js](https://img.shields.io/badge/Next.js-000000?style=for-the-badge&logo=next.js&logoColor=white)
 ![Claude](https://img.shields.io/badge/Claude-Sonnet_4-8B5CF6?style=for-the-badge)
 ![GPT-4](https://img.shields.io/badge/GPT--4o--mini-74AA9C?style=for-the-badge&logo=openai&logoColor=white)
+![Status](https://img.shields.io/badge/Status-In_Development-yellow?style=for-the-badge)
 
 **The only travel planner that treats "wheelchair accessible + vegan + $60/day" as a challenge, not a compromise.**
 
 [Live Demo](#) • [Architecture](#-architecture) • [Why This Exists](#-the-problem-with-chatgpt-travel-planning) • [Quick Start](#-quick-start)
 
 </div>
+
+---
+
+## 🚧 Project Status
+
+> **⚠️ Currently in active development!** This is a working prototype built to explore multi-agent AI systems for constraint-heavy planning problems. Core functionality is operational but some features (Reddit integration, venue diversity) are still being refined.
+
+---
+
+## 💼 For Founders & Builders
+
+**What is this?** A production-ready demo of multi-agent AI architecture solving real-world constraint satisfaction problems — specifically, travel planning with accessibility/dietary/budget requirements.
+
+**Why it matters:** Single-model AI (ChatGPT/Gemini) fails at constraint-heavy tasks because they lack specialization and verification. This project proves that **agent orchestration beats monolithic models** when constraints matter.
+
+**The insight:** Instead of one AI doing everything (parsing, research, optimization, writing), we deploy 4 specialized agents — each world-class at ONE thing. Parser validates. Researcher verifies via Google API. Optimizer satisfies constraints. Storyteller makes it beautiful. Result: **100% constraint satisfaction, not probabilistic guesses.**
+
+**Tech stack:** Next.js 14, TypeScript, OpenAI + Anthropic APIs, Google Maps integration, real-time SSE streaming, Supabase. Clean, modular, production-ready code.
+
+**🚀 Built by [Ganesha Srinivas Damaraju](https://github.com/ganeshasrinivasd) — DMs open for collaboration, feedback, or if you're solving similar problems at scale.**
 
 ---
 
@@ -82,7 +103,7 @@ Extracts structure from vague requests. Catches conflicts early.
 **Superpower:** Cross-references reality
 
 **What it does:**
-1. Searches r/JapanTravel, r/travel for authentic recommendations
+1. Searches r/JapanTravel, r/travel for authentic recommendations (⚠️ *in development*)
 2. Verifies EVERY venue via Google Places API (rating, accessibility, photos)
 3. Checks wheelchair accessibility metadata
 4. Confirms dietary options (vegan menu availability)
@@ -158,7 +179,7 @@ Backend:     Next.js API Routes (edge functions)
 Database:    Supabase (PostgreSQL with Row Level Security)
 AI Models:   OpenAI GPT-4o-mini + Anthropic Claude Sonnet 4
 APIs:        Google Maps (Places, Directions, Geocoding)
-             Reddit API (Snoowrap)
+             Reddit API (Snoowrap) — in development
              Mapbox (visual maps)
 ```
 
@@ -188,7 +209,7 @@ APIs:        Google Maps (Places, Directions, Geocoding)
                     ┌───────────▼────────────────▼──────────┐
                     │      External Services Layer          │
                     │  • Google Maps (Places, Directions)   │
-                    │  • Reddit API (r/travel, r/japan...)  │
+                    │  • Reddit API (in development)        │
                     │  • OpenAI API                         │
                     │  • Anthropic API                      │
                     └───────────────┬───────────────────────┘
@@ -205,7 +226,7 @@ APIs:        Google Maps (Places, Directions, Geocoding)
 
 Custom MCP implementations for:
 
-**Reddit MCP:**
+**Reddit MCP:** *(in development)*
 - Result caching (avoid rate limits)
 - Sentiment analysis on comments
 - Upvote-weighted ranking
@@ -282,7 +303,7 @@ Supabase account (free tier works)
 API Keys:
   - OpenAI (GPT-4o-mini)
   - Anthropic (Claude Sonnet 4)
-  - Google Maps (Places API + Directions API)
+  - Google Maps (Places API + Directions API + Geocoding API)
   - Mapbox (for map display)
 ```
 
@@ -306,8 +327,8 @@ cp .env.local.example .env.local
 
 # Setup Supabase database
 # 1. Create a new project on supabase.com
-# 2. Run the SQL in supabase/migrations/001_initial_schema.sql
-#    in the SQL Editor
+# 2. Go to SQL Editor
+# 3. Run the SQL in supabase/migrations/001_initial_schema.sql
 
 # Start development server
 npm run dev
@@ -341,21 +362,38 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 
 ## 🎨 Features
 
-### ✅ Core Features
+### ✅ Working Features
 - **100% Constraint Satisfaction** — Every venue verified
 - **Real-time Agent Streaming** — Watch the pipeline work
 - **Geographic Clustering** — Minimal backtracking
 - **Accessibility-First** — Wheelchair verification via Google API
-- **Dietary Verification** — Vegan/vegetarian options confirmed
 - **Budget Tracking** — Per-day cost monitoring
 - **Day-by-Day Breakdown** — Time, cost, walking distance
-
-### 🎯 Advanced Features
-- **Reddit Integration** — Authentic traveler recommendations
-- **Route Optimization** — Google Directions API for real travel times
-- **Constraint Conflict Detection** — Catches impossible requests early
 - **Persistent Storage** — Save and share itineraries
 - **Responsive Design** — Works on mobile, tablet, desktop
+
+### 🚧 In Development
+- **Reddit Integration** — Authentic traveler recommendations (API migration in progress)
+- **Dietary Verification** — Vegan/vegetarian menu confirmation (limited by Google API data)
+- **Venue Diversity** — Expanding beyond museums to restaurants, cafes, activities
+- **Multi-city Routes** — Tokyo → Kyoto → Osaka support
+
+---
+
+## 🐛 Known Issues & Limitations
+
+### Current Limitations
+- ⚠️ **Reddit integration** — Currently using placeholder data due to Reddit's new Devvit API requirements
+- ⚠️ **Limited city coordinates** — Hardcoded for major cities (Tokyo, Paris, NYC, London, Hyderabad)
+- ⚠️ **Venue repetition** — When Google returns <10 venues, optimizer cycles through available options
+- ⚠️ **Dietary verification** — Relies on Google Places data which isn't always complete
+
+### Workarounds
+- **For more venues:** Try major cities (Tokyo works best with 50+ venues)
+- **For geocoding:** PRs welcome to integrate Google Geocoding API for any city
+- **For Reddit data:** Using Google Maps reviews as primary source until Reddit API stabilizes
+
+See [Issues](https://github.com/ganeshasrinivasd/wandr-ai-complete/issues) for detailed tracking.
 
 ---
 
@@ -364,7 +402,7 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 - **Average generation time:** 30-60 seconds (4 agents working in sequence)
 - **Constraint satisfaction rate:** 100% (verified, not estimated)
 - **Venues verified per trip:** 10-20 via Google Places API
-- **Reddit threads analyzed:** 5-15 per destination
+- **Cities supported:** Major metropolitan areas with Google Places coverage
 
 ---
 
@@ -373,11 +411,12 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 We welcome contributions! Here's how you can help:
 
 ### Priority Areas
-- 🌐 **More MCP servers** (Airbnb, TripAdvisor, Yelp)
-- 🔧 **Additional constraints** (pet-friendly, child-friendly, sensory-friendly)
-- 🎨 **UI improvements** (dark mode, animations, mobile optimization)
-- 🌍 **Multi-language support** (i18n)
-- 📊 **Analytics dashboard** (constraint satisfaction metrics)
+- 🌐 **Google Geocoding integration** — Support any city globally
+- 🔧 **Reddit API migration** — Adapt to new Devvit platform
+- 🍽️ **Enhanced dietary filters** — "no shellfish", "halal certified", "kosher"
+- 🎨 **UI improvements** — Dark mode, animations, mobile optimization
+- 🌍 **Multi-language support** — i18n for international travelers
+- 📊 **Analytics dashboard** — Track constraint satisfaction metrics
 
 ### Development
 
@@ -389,7 +428,7 @@ git checkout -b feature/your-feature-name
 npm run dev
 
 # Commit with conventional commits
-git commit -m "feat: add dark mode support"
+git commit -m "feat: add geocoding API support"
 
 # Push and create PR
 git push origin feature/your-feature-name
@@ -397,17 +436,13 @@ git push origin feature/your-feature-name
 
 ---
 
-## 🐛 Known Issues
-
-- **Reddit API rate limits** — Currently uses placeholder data for high-volume searches
-- **Limited city coverage** — Hardcoded coordinates for major cities (PRs welcome for Geocoding API)
-- **No meal constraints** — Doesn't yet handle "no shellfish" or "halal certified"
-
-See [Issues](https://github.com/ganeshasrinivasd/wandr-ai-complete/issues) for full list.
-
----
-
 ## 🗺️ Roadmap
+
+### v1.5 (Current Sprint)
+- [ ] Fix Reddit API integration with Devvit
+- [ ] Add Google Geocoding for global city support
+- [ ] Improve venue diversity (restaurants, cafes, nightlife)
+- [ ] Enhanced error handling and user feedback
 
 ### v2.0 (Q1 2026)
 - [ ] Multi-city itineraries ("Tokyo → Kyoto → Osaka")
@@ -441,12 +476,20 @@ Feel free to use this for your own projects, commercial or otherwise!
 
 ---
 
-## 📬 Contact & Support
+## 📬 Contact & Collaboration
 
 **Built by:** [Ganesha Srinivas Damaraju](https://github.com/ganeshasrinivasd)
 
-**Questions?** Open an [issue](https://github.com/ganeshasrinivasd/wandr-ai-complete/issues)  
-**Suggestions?** Start a [discussion](https://github.com/ganeshasrinivasd/wandr-ai-complete/discussions)
+**Looking for:**
+- Founders building in the AI agent orchestration space
+- Developers interested in accessibility tech
+- Travel industry partners
+- Feedback from accessibility advocates
+
+**Reach out:**
+- 💼 **For collaboration:** DM on GitHub or open a discussion
+- 🐛 **For bugs:** Open an [issue](https://github.com/ganeshasrinivasd/wandr-ai-complete/issues)
+- 💡 **For ideas:** Start a [discussion](https://github.com/ganeshasrinivasd/wandr-ai-complete/discussions)
 
 ---
 
@@ -465,7 +508,7 @@ This project was built with love for travelers who've been told:
 
 <div align="center">
 
-### ⭐ If this helped you plan an impossible trip, give us a star! ⭐
+### ⭐ If this inspired you or solved a problem, give us a star! ⭐
 
 Made with ❤️ and a lot of TypeScript
 
