@@ -89,7 +89,7 @@ export async function getPlaceDetails(placeId: string) {
       reviews_count: place.user_ratings_total,
       price_level: place.price_level,
       opening_hours: place.opening_hours,
-      wheelchair_accessible: place.wheelchair_accessible_entrance,
+      wheelchair_accessible: (place as any).wheelchair_accessible_entrance,
       website: place.website,
       phone: place.formatted_phone_number,
       reviews: place.reviews?.slice(0, 5).map((r) => ({
@@ -120,7 +120,7 @@ export async function checkAccessibility(placeId: string) {
     });
 
     const place = response.data.result;
-    const accessible = place.wheelchair_accessible_entrance;
+    const accessible = (place as any).wheelchair_accessible_entrance;
 
     console.log(
       `✓ Accessibility: ${accessible === true ? 'Yes' : accessible === false ? 'No' : 'Unknown'}`
@@ -240,21 +240,3 @@ export const googleMapsTools = {
   getDirections,
   calculateRouteTime,
 };
-
-// CLI test interface
-if (import.meta.url === `file://${process.argv[1]}`) {
-  console.log('\n🧪 Testing Google Maps MCP Server\n');
-
-  searchPlaces({
-    query: 'wheelchair accessible restaurants',
-    location: { lat: 35.6762, lng: 139.6503 }, // Tokyo
-    radius: 5000,
-  })
-    .then((results) => {
-      console.log('\n📊 Results:', JSON.stringify(results.slice(0, 3), null, 2));
-    })
-    .catch((error) => {
-      console.error('❌ Error:', error);
-      process.exit(1);
-    });
-}

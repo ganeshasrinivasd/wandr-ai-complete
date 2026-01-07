@@ -57,12 +57,12 @@ export async function runAgent2Researcher(
 
       for (const place of places.slice(0, 3)) {
         candidates.attractions.push({
-          id: place.place_id,
-          name: place.name,
+          id: place.place_id || `place_${Date.now()}_${Math.random()}`,
+          name: place.name || 'Unknown Place',
           type: 'attraction',
           location: {
-            lat: place.location!.lat,
-            lng: place.location!.lng,
+            lat: place.location?.lat || 0,
+            lng: place.location?.lng || 0,
             neighborhood: place.vicinity || '',
           },
           reddit_data: {
@@ -106,12 +106,12 @@ export async function runAgent2Researcher(
 
     for (const place of restaurants.slice(0, 5)) {
       candidates.restaurants.push({
-        id: place.place_id,
-        name: place.name,
+        id: place.place_id || `place_${Date.now()}_${Math.random()}`,
+        name: place.name || 'Unknown Restaurant',
         type: 'restaurant',
         location: {
-          lat: place.location!.lat,
-          lng: place.location!.lng,
+          lat: place.location?.lat || 0,
+          lng: place.location?.lng || 0,
           neighborhood: place.vicinity || '',
         },
         reddit_data: {

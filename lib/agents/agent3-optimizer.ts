@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { ParsedInput, Candidate, Itinerary, DayItinerary } from '../utils/types';
+import { ParsedInput, Candidate, Itinerary, DayItinerary, Activity } from '../utils/types';
 import { googleMapsMCP } from '../mcp/google-maps-client';
 
 const anthropic = new Anthropic({
@@ -120,7 +120,7 @@ export async function runAgent3Optimizer(
       .slice(0, 2); // Lunch and dinner
 
     // Build schedule
-    const activities = [];
+    const activities: Activity[] = [];
 
     // Morning activity
     if (selectedAttractions[0]) {
@@ -141,7 +141,7 @@ export async function runAgent3Optimizer(
             selectedAttractions[0].reddit_data.sample_quotes[0]?.substring(
               0,
               150
-            ),
+            ) || '',
           upvotes: selectedAttractions[0].reddit_data.mentions,
         },
       });
@@ -185,7 +185,7 @@ export async function runAgent3Optimizer(
             selectedAttractions[1].reddit_data.sample_quotes[0]?.substring(
               0,
               150
-            ),
+            ) || '',
         },
       });
     }
@@ -209,9 +209,9 @@ export async function runAgent3Optimizer(
       });
     }
 
-    // Calculate travel times (simplified)
+    // Calculate travel times (simplified) - add to activities
     for (let i = 0; i < activities.length - 1; i++) {
-      activities[i].travel = {
+      (activities[i] as any).travel = {
         from: activities[i].activity.name,
         mode: 'transit',
         duration_minutes: 15,
@@ -220,7 +220,7 @@ export async function runAgent3Optimizer(
     }
 
     // Calculate day summary
-    const totalCost = activities.reduce((sum, a) => sum + (a.activity.cost || 0) + (a.travel?.cost || 0), 0);
+    const totalCost = activities.reduce((sum, a) => sum + (a.activity.cost || 0) + ((a as any).travel?.cost || 0), 0);
     const totalWalking = activities.length * 0.5; // Rough estimate
 
     // Validate constraints
@@ -299,6 +299,11 @@ function clusterByLocation(candidates: Candidate[], k: number): Candidate[][] {
   for (let i = 0; i < k && i < neighborhoods.length; i++) {
     const neighborhood = neighborhoods[i];
     clusters.push(candidates.filter((c) => c.location.neighborhood === neighborhood));
+  }
+  
+  // If we don't have enough clusters, add remaining candidates to first cluster
+  if (clusters.length === 0) {
+    clusters.push(candidates);
   }
   
   return clusters.filter((c) => c.length > 0);

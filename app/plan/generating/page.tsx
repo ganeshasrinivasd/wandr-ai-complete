@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -32,7 +33,7 @@ const agents = [
   },
 ];
 
-export default function GeneratingPage() {
+function GeneratingContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [logs, setLogs] = useState<string[]>([]);
@@ -59,7 +60,7 @@ export default function GeneratingPage() {
     } catch (e) {
       router.push('/planner');
     }
-  }, [searchParams]);
+  }, [searchParams, router]);
 
   const generatePlan = async (planInput: any) => {
     try {
@@ -135,7 +136,7 @@ export default function GeneratingPage() {
 
       {/* Animated gradient orbs */}
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-500/20 rounded-full blur-3xl animate-pulse" />
-      <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-blue-500/20 rounded-full blur-3xl animate-pulse delay-1000" />
+      <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-blue-500/20 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }} />
 
       {/* Content */}
       <div className="relative z-10 min-h-screen flex flex-col">
@@ -326,5 +327,26 @@ export default function GeneratingPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+// Loading fallback
+function LoadingFallback() {
+  return (
+    <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+      <div className="text-center">
+        <Loader2 className="w-8 h-8 text-purple-400 animate-spin mx-auto mb-4" />
+        <p className="text-white/50">Loading...</p>
+      </div>
+    </div>
+  );
+}
+
+// Main export with Suspense wrapper
+export default function GeneratingPage() {
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <GeneratingContent />
+    </Suspense>
   );
 }
