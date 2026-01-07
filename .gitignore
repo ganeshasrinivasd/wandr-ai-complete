@@ -27,6 +27,7 @@ yarn-error.log*
 # Local env files
 .env*.local
 .env
+.env.local
 
 # Vercel
 .vercel
@@ -41,3 +42,4 @@ mcp-servers/**/dist
 
 # Supabase
 .supabase/
+.env.local
