@@ -94,6 +94,7 @@ export interface Activity {
     mode: string;
     duration_minutes: number;
     cost: number;
+    distance_km?: number;
   };
 }
 
