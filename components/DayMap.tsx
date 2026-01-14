@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
+import { Map } from 'lucide-react';
 
 interface Activity {
   activity: {
@@ -27,10 +28,15 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   const [mapReady, setMapReady] = useState(false);
 
+  console.log('DayMap received activities:', activities);
+  console.log('Activities with locations:', activities.map(a => ({ name: a.activity.name, location: a.activity.location })));
+
   // Filter activities with valid locations
   const validActivities = activities.filter(
     (a) => a.activity.location && a.activity.location.lat !== 0 && a.activity.location.lng !== 0
   );
+  
+  console.log('Valid activities count:', validActivities.length);
 
   // Initialize map
   useEffect(() => {
@@ -172,9 +178,11 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
   if (validActivities.length === 0) {
     return (
       <div className="w-full h-full bg-white/5 rounded-2xl flex items-center justify-center border border-white/10">
-        <div className="text-center">
-          <p className="text-white/40 text-sm">No location data available</p>
-          <p className="text-white/30 text-xs mt-1">Generate a new plan to see the map</p>
+        <div className="text-center p-4">
+          <Map className="w-8 h-8 text-white/20 mx-auto mb-2" />
+          <p className="text-white/40 text-sm">No location data</p>
+          <p className="text-white/30 text-xs mt-1">This plan was created before map support.</p>
+          <p className="text-purple-400 text-xs mt-2">Generate a new plan to see the route!</p>
         </div>
       </div>
     );

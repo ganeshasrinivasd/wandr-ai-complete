@@ -14,7 +14,9 @@ import {
   Footprints,
   Download,
   Share2,
+  ImageOff,
 } from 'lucide-react';
+import DayMap from '@/components/DayMap';
 
 export default function PlanResultsPage() {
   const params = useParams();
@@ -211,7 +213,7 @@ export default function PlanResultsPage() {
         </div>
 
         {/* Main Content */}
-        <div className="max-w-6xl mx-auto px-8 py-12">
+        <div className="max-w-7xl mx-auto px-8 py-12">
           {!hasActivities ? (
             /* No activities warning */
             <motion.div
@@ -244,7 +246,7 @@ export default function PlanResultsPage() {
               </div>
             </motion.div>
           ) : (
-            <div className="grid md:grid-cols-[200px_1fr] gap-8">
+            <div className="grid md:grid-cols-[200px_1fr_350px] gap-8">
               {/* Day selector sidebar */}
               <motion.div
                 initial={{ opacity: 0, x: -20 }}
@@ -334,25 +336,44 @@ export default function PlanResultsPage() {
 
                             {/* Content */}
                             <div className="flex-1 pb-6">
-                              <div className="flex items-start justify-between mb-2">
-                                <div>
-                                  <div className="text-xs text-white/40 mb-1">
-                                    {activity.time}
+                              <div className="flex gap-4">
+                                {/* Photo */}
+                                {activity.activity.photo_url ? (
+                                  <div className="flex-shrink-0 w-24 h-24 rounded-xl overflow-hidden bg-white/5">
+                                    <img
+                                      src={activity.activity.photo_url}
+                                      alt={activity.activity.name}
+                                      className="w-full h-full object-cover"
+                                      onError={(e) => {
+                                        (e.target as HTMLImageElement).style.display = 'none';
+                                        (e.target as HTMLImageElement).parentElement!.innerHTML = '<div class="w-full h-full flex items-center justify-center"><svg class="w-6 h-6 text-white/20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg></div>';
+                                      }}
+                                    />
                                   </div>
-                                  <h3 className="text-lg text-white">
-                                    {activity.activity.name}
-                                  </h3>
-                                </div>
-                                {activity.activity.cost > 0 && (
-                                  <span className="text-white/60">
-                                    ${activity.activity.cost}
-                                  </span>
-                                )}
-                              </div>
+                                ) : null}
 
-                              <p className="text-white/50 text-sm mb-3">
-                                {activity.activity.description}
-                              </p>
+                                <div className="flex-1">
+                                  <div className="flex items-start justify-between mb-2">
+                                    <div>
+                                      <div className="text-xs text-white/40 mb-1">
+                                        {activity.time}
+                                      </div>
+                                      <h3 className="text-lg text-white">
+                                        {activity.activity.name}
+                                      </h3>
+                                    </div>
+                                    {activity.activity.cost > 0 && (
+                                      <span className="text-white/60">
+                                        ${activity.activity.cost}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <p className="text-white/50 text-sm mb-3">
+                                    {activity.activity.description}
+                                  </p>
+                                </div>
+                              </div>
 
                               {/* Tags */}
                               <div className="flex flex-wrap gap-2">
@@ -416,6 +437,25 @@ export default function PlanResultsPage() {
                     )}
                   </>
                 )}
+              </motion.div>
+
+              {/* Day Map */}
+              <motion.div
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="hidden md:block sticky top-8 h-[600px]"
+              >
+                <div className="h-full">
+                  <p className="text-xs text-white/40 tracking-wider mb-4">
+                    DAY ROUTE
+                  </p>
+                  <div className="h-[calc(100%-2rem)]">
+                    <DayMap
+                      activities={currentDay?.activities || []}
+                      activeActivityId={undefined}
+                    />
+                  </div>
+                </div>
               </motion.div>
             </div>
           )}
