@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
-import 'mapbox-gl/dist/mapbox-gl.css';
 
 interface Activity {
   activity: {
@@ -26,19 +25,27 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
-  const [mapLoaded, setMapLoaded] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
 
   // Filter activities with valid locations
   const validActivities = activities.filter(
-    (a) => a.activity.location?.lat && a.activity.location?.lng
+    (a) => a.activity.location && a.activity.location.lat !== 0 && a.activity.location.lng !== 0
   );
 
+  // Initialize map
   useEffect(() => {
-    if (!mapContainer.current || validActivities.length === 0) return;
+    if (!mapContainer.current || map.current) return;
+    if (validActivities.length === 0) return;
 
-    mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || '';
+    const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+    if (!token) {
+      console.error('Mapbox token not found');
+      return;
+    }
 
-    // Calculate center from all activities
+    mapboxgl.accessToken = token;
+
+    // Calculate center
     const lats = validActivities.map((a) => a.activity.location!.lat);
     const lngs = validActivities.map((a) => a.activity.location!.lng);
     const centerLat = lats.reduce((a, b) => a + b, 0) / lats.length;
@@ -51,32 +58,27 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
       zoom: 12,
     });
 
+    map.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
+
     map.current.on('load', () => {
-      setMapLoaded(true);
-      addMarkersAndRoute();
+      setMapReady(true);
     });
 
     return () => {
-      markersRef.current.forEach((m) => m.remove());
       map.current?.remove();
+      map.current = null;
     };
-  }, []);
+  }, [validActivities.length]);
 
-  // Update markers when activities change
+  // Add markers and route when map is ready or activities change
   useEffect(() => {
-    if (mapLoaded && map.current) {
-      addMarkersAndRoute();
-    }
-  }, [activities, mapLoaded, activeActivityId]);
-
-  const addMarkersAndRoute = () => {
-    if (!map.current) return;
+    if (!map.current || !mapReady) return;
 
     // Clear existing markers
     markersRef.current.forEach((m) => m.remove());
     markersRef.current = [];
 
-    // Remove existing route layer
+    // Remove existing route
     if (map.current.getLayer('route')) {
       map.current.removeLayer('route');
     }
@@ -84,35 +86,32 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
       map.current.removeSource('route');
     }
 
-    // Add markers for each activity
+    if (validActivities.length === 0) return;
+
+    // Add markers
     validActivities.forEach((activity, index) => {
       const loc = activity.activity.location!;
       const isActive = activity.activity.id === activeActivityId;
       const isMeal = activity.type === 'meal';
 
-      // Create custom marker element
       const el = document.createElement('div');
-      el.className = 'custom-marker';
-      el.innerHTML = `
-        <div style="
-          width: ${isActive ? '36px' : '28px'};
-          height: ${isActive ? '36px' : '28px'};
-          background: ${isMeal ? '#22c55e' : '#a855f7'};
-          border: 3px solid ${isActive ? '#fff' : 'rgba(255,255,255,0.5)'};
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          color: white;
-          font-weight: bold;
-          font-size: ${isActive ? '14px' : '12px'};
-          box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-          cursor: pointer;
-          transition: all 0.2s ease;
-        ">
-          ${index + 1}
-        </div>
+      el.style.cssText = `
+        width: ${isActive ? '40px' : '32px'};
+        height: ${isActive ? '40px' : '32px'};
+        background: ${isMeal ? '#22c55e' : '#a855f7'};
+        border: 3px solid ${isActive ? '#fff' : 'rgba(255,255,255,0.6)'};
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: bold;
+        font-size: ${isActive ? '16px' : '14px'};
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        cursor: pointer;
+        transition: all 0.2s ease;
       `;
+      el.innerHTML = `${index + 1}`;
 
       el.addEventListener('click', () => {
         onMarkerClick?.(activity.activity.id);
@@ -120,12 +119,13 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
 
       const marker = new mapboxgl.Marker({ element: el })
         .setLngLat([loc.lng, loc.lat])
+        .setPopup(new mapboxgl.Popup({ offset: 25 }).setHTML(`<strong>${activity.activity.name}</strong>`))
         .addTo(map.current!);
 
       markersRef.current.push(marker);
     });
 
-    // Draw route line connecting activities
+    // Draw route line
     if (validActivities.length > 1) {
       const coordinates = validActivities.map((a) => [
         a.activity.location!.lng,
@@ -154,27 +154,28 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
         },
         paint: {
           'line-color': '#a855f7',
-          'line-width': 3,
-          'line-opacity': 0.7,
-          'line-dasharray': [2, 2],
+          'line-width': 4,
+          'line-opacity': 0.8,
         },
       });
     }
 
-    // Fit bounds to show all markers
-    if (validActivities.length > 0) {
-      const bounds = new mapboxgl.LngLatBounds();
-      validActivities.forEach((a) => {
-        bounds.extend([a.activity.location!.lng, a.activity.location!.lat]);
-      });
-      map.current.fitBounds(bounds, { padding: 50, maxZoom: 14 });
-    }
-  };
+    // Fit bounds
+    const bounds = new mapboxgl.LngLatBounds();
+    validActivities.forEach((a) => {
+      bounds.extend([a.activity.location!.lng, a.activity.location!.lat]);
+    });
+    map.current.fitBounds(bounds, { padding: 60, maxZoom: 14 });
+
+  }, [mapReady, validActivities, activeActivityId, onMarkerClick]);
 
   if (validActivities.length === 0) {
     return (
-      <div className="w-full h-full bg-white/5 rounded-2xl flex items-center justify-center">
-        <p className="text-white/40 text-sm">No location data available</p>
+      <div className="w-full h-full bg-white/5 rounded-2xl flex items-center justify-center border border-white/10">
+        <div className="text-center">
+          <p className="text-white/40 text-sm">No location data available</p>
+          <p className="text-white/30 text-xs mt-1">Generate a new plan to see the map</p>
+        </div>
       </div>
     );
   }

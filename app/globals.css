@@ -2,6 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Mapbox GL CSS */
+@import 'mapbox-gl/dist/mapbox-gl.css';
+
 /* Import premium fonts */
 @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&family=Outfit:wght@200;300;400;500;600&display=swap');
 
