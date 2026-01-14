@@ -40,6 +40,7 @@ export async function searchPlaces(params: {
       price_level: place.price_level,
       types: place.types,
       opening_hours: place.opening_hours,
+      photo_reference: place.photos?.[0]?.photo_reference || null,
     }));
 
     console.log(`✓ Found ${results.length} places`);

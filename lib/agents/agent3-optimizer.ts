@@ -206,6 +206,11 @@ function buildOptimizedDayRoute(
         description: `${slot.type === 'meal' ? 'Dine at' : 'Visit'} ${selectedVenue.name}`,
         reddit_quote: selectedVenue.reddit_data.sample_quotes[0] || undefined,
         upvotes: selectedVenue.reddit_data.mentions || undefined,
+        photo_url: selectedVenue.photo_url,
+        location: {
+          lat: selectedVenue.location.lat,
+          lng: selectedVenue.location.lng,
+        },
       },
       travel: travelInfo,
     });

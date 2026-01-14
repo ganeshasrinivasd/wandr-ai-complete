@@ -170,6 +170,11 @@ export async function runAgent2Researcher(
 }
 
 function createCandidate(place: any, type: 'attraction' | 'restaurant' | 'cafe'): Candidate {
+  // Build photo URL if photo_reference exists
+  const photoUrl = place.photo_reference
+    ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference=${place.photo_reference}&key=${process.env.GOOGLE_MAPS_API_KEY}`
+    : undefined;
+
   return {
     id: place.place_id || `place_${Date.now()}_${Math.random()}`,
     name: place.name || 'Unknown Place',
@@ -179,6 +184,7 @@ function createCandidate(place: any, type: 'attraction' | 'restaurant' | 'cafe')
       lng: place.location?.lng || 0,
       neighborhood: place.vicinity || place.formatted_address || '',
     },
+    photo_url: photoUrl,
     reddit_data: {
       mentions: 0,
       sentiment: 0.7,

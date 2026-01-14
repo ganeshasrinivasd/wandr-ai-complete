@@ -54,6 +54,7 @@ export interface Candidate {
     lng: number;
     neighborhood: string;
   };
+  photo_url?: string;
   reddit_data: {
     mentions: number;
     sentiment: number;
@@ -88,6 +89,11 @@ export interface Activity {
     description?: string;
     reddit_quote?: string;
     upvotes?: number;
+    photo_url?: string;
+    location?: {
+      lat: number;
+      lng: number;
+    };
   };
   travel?: {
     from: string;
