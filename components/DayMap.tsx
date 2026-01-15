@@ -28,15 +28,10 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   const [mapReady, setMapReady] = useState(false);
 
-  console.log('DayMap received activities:', activities);
-  console.log('Activities with locations:', activities.map(a => ({ name: a.activity.name, location: a.activity.location })));
-
   // Filter activities with valid locations
   const validActivities = activities.filter(
     (a) => a.activity.location && a.activity.location.lat !== 0 && a.activity.location.lng !== 0
   );
-  
-  console.log('Valid activities count:', validActivities.length);
 
   // Initialize map
   useEffect(() => {
@@ -80,98 +75,123 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
   useEffect(() => {
     if (!map.current || !mapReady) return;
 
-    // Clear existing markers
-    markersRef.current.forEach((m) => m.remove());
-    markersRef.current = [];
+    const updateMap = () => {
+      if (!map.current) return;
 
-    // Remove existing route
-    if (map.current.getLayer('route')) {
-      map.current.removeLayer('route');
-    }
-    if (map.current.getSource('route')) {
-      map.current.removeSource('route');
-    }
+      // Check if style is loaded
+      if (!map.current.isStyleLoaded()) {
+        // Wait for style to load
+        map.current.once('styledata', updateMap);
+        return;
+      }
 
-    if (validActivities.length === 0) return;
+      // Clear existing markers
+      markersRef.current.forEach((m) => m.remove());
+      markersRef.current = [];
 
-    // Add markers
-    validActivities.forEach((activity, index) => {
-      const loc = activity.activity.location!;
-      const isActive = activity.activity.id === activeActivityId;
-      const isMeal = activity.type === 'meal';
+      // Remove existing route safely
+      try {
+        if (map.current.getLayer('route')) {
+          map.current.removeLayer('route');
+        }
+        if (map.current.getSource('route')) {
+          map.current.removeSource('route');
+        }
+      } catch (e) {
+        console.warn('Error removing route:', e);
+      }
 
-      const el = document.createElement('div');
-      el.style.cssText = `
-        width: ${isActive ? '40px' : '32px'};
-        height: ${isActive ? '40px' : '32px'};
-        background: ${isMeal ? '#22c55e' : '#a855f7'};
-        border: 3px solid ${isActive ? '#fff' : 'rgba(255,255,255,0.6)'};
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: white;
-        font-weight: bold;
-        font-size: ${isActive ? '16px' : '14px'};
-        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-        cursor: pointer;
-        transition: all 0.2s ease;
-      `;
-      el.innerHTML = `${index + 1}`;
+      if (validActivities.length === 0) return;
 
-      el.addEventListener('click', () => {
-        onMarkerClick?.(activity.activity.id);
+      // Add markers
+      validActivities.forEach((activity, index) => {
+        const loc = activity.activity.location!;
+        const isActive = activity.activity.id === activeActivityId;
+        const isMeal = activity.type === 'meal';
+
+        const el = document.createElement('div');
+        el.style.cssText = `
+          width: ${isActive ? '40px' : '32px'};
+          height: ${isActive ? '40px' : '32px'};
+          background: ${isMeal ? '#22c55e' : '#a855f7'};
+          border: 3px solid ${isActive ? '#fff' : 'rgba(255,255,255,0.6)'};
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: white;
+          font-weight: bold;
+          font-size: ${isActive ? '16px' : '14px'};
+          box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+          cursor: pointer;
+          transition: all 0.2s ease;
+        `;
+        el.innerHTML = `${index + 1}`;
+
+        el.addEventListener('click', () => {
+          onMarkerClick?.(activity.activity.id);
+        });
+
+        const marker = new mapboxgl.Marker({ element: el })
+          .setLngLat([loc.lng, loc.lat])
+          .setPopup(new mapboxgl.Popup({ offset: 25 }).setHTML(`<strong>${activity.activity.name}</strong>`))
+          .addTo(map.current!);
+
+        markersRef.current.push(marker);
       });
 
-      const marker = new mapboxgl.Marker({ element: el })
-        .setLngLat([loc.lng, loc.lat])
-        .setPopup(new mapboxgl.Popup({ offset: 25 }).setHTML(`<strong>${activity.activity.name}</strong>`))
-        .addTo(map.current!);
+      // Draw route line
+      if (validActivities.length > 1) {
+        const coordinates = validActivities.map((a) => [
+          a.activity.location!.lng,
+          a.activity.location!.lat,
+        ]);
 
-      markersRef.current.push(marker);
-    });
+        try {
+          map.current.addSource('route', {
+            type: 'geojson',
+            data: {
+              type: 'Feature',
+              properties: {},
+              geometry: {
+                type: 'LineString',
+                coordinates,
+              },
+            },
+          });
 
-    // Draw route line
-    if (validActivities.length > 1) {
-      const coordinates = validActivities.map((a) => [
-        a.activity.location!.lng,
-        a.activity.location!.lat,
-      ]);
+          map.current.addLayer({
+            id: 'route',
+            type: 'line',
+            source: 'route',
+            layout: {
+              'line-join': 'round',
+              'line-cap': 'round',
+            },
+            paint: {
+              'line-color': '#a855f7',
+              'line-width': 4,
+              'line-opacity': 0.8,
+            },
+          });
+        } catch (e) {
+          console.warn('Error adding route:', e);
+        }
+      }
 
-      map.current.addSource('route', {
-        type: 'geojson',
-        data: {
-          type: 'Feature',
-          properties: {},
-          geometry: {
-            type: 'LineString',
-            coordinates,
-          },
-        },
-      });
+      // Fit bounds
+      try {
+        const bounds = new mapboxgl.LngLatBounds();
+        validActivities.forEach((a) => {
+          bounds.extend([a.activity.location!.lng, a.activity.location!.lat]);
+        });
+        map.current.fitBounds(bounds, { padding: 60, maxZoom: 14 });
+      } catch (e) {
+        console.warn('Error fitting bounds:', e);
+      }
+    };
 
-      map.current.addLayer({
-        id: 'route',
-        type: 'line',
-        source: 'route',
-        layout: {
-          'line-join': 'round',
-          'line-cap': 'round',
-        },
-        paint: {
-          'line-color': '#a855f7',
-          'line-width': 4,
-          'line-opacity': 0.8,
-        },
-      });
-    }
-
-    // Fit bounds
-    const bounds = new mapboxgl.LngLatBounds();
-    validActivities.forEach((a) => {
-      bounds.extend([a.activity.location!.lng, a.activity.location!.lat]);
-    });
-    map.current.fitBounds(bounds, { padding: 60, maxZoom: 14 });
+    updateMap();
 
   }, [mapReady, validActivities, activeActivityId, onMarkerClick]);
 
