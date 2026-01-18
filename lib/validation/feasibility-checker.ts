@@ -91,11 +91,13 @@ export function checkDayFeasibility(
     );
 
     if (!hasAnchor) {
+      // CHANGED: Missing anchor is now a warning that triggers repair
+      // Previously was informational only, now triggers Anchor Recovery
       issues.push({
         type: 'missing_anchor',
-        severity: 'warning',
+        severity: 'warning', // Warning triggers repair in repair engine
         dayIndex: timeline.dayIndex,
-        message: `Day ${timeline.dayIndex + 1} lacks a major anchor attraction`,
+        message: `Day ${timeline.dayIndex + 1} lacks a major anchor attraction (triggers Anchor Recovery)`,
       });
     }
   }

@@ -10,6 +10,8 @@
  * - Never assign non-restaurants to meal slots
  * - Big rock days default to area_only
  * - Select restaurants near activities in the same zone
+ * - CRITICAL: Respects used tracking to prevent duplicates
+ * - When includeRestaurants=false, meals are time blocks only (no venue selection)
  */
 
 import {
@@ -22,6 +24,29 @@ import {
   DEFAULT_MEAL_CONFIG,
 } from './types';
 import { haversineDistance } from '../utils/duration-estimator';
+import { TripLedger } from '../utils/trip-ledger';
+import {
+  isValidRestaurantStrict,
+  filterValidRestaurantsStrict,
+  RestaurantValidationPolicy,
+  DEFAULT_RESTAURANT_POLICY,
+} from '../validation/restaurant-validation';
+
+// =============================================================================
+// MEAL SCHEDULING OPTIONS
+// =============================================================================
+
+export interface MealSchedulingOptions {
+  /** If false, meals are time blocks only with no restaurant venues */
+  includeRestaurants: boolean;
+  /** Restaurant validation policy */
+  restaurantPolicy: RestaurantValidationPolicy;
+}
+
+export const DEFAULT_MEAL_SCHEDULING_OPTIONS: MealSchedulingOptions = {
+  includeRestaurants: false, // Default: no restaurant selection
+  restaurantPolicy: DEFAULT_RESTAURANT_POLICY,
+};
 
 // =============================================================================
 // MAIN MEAL SCHEDULING
@@ -29,21 +54,44 @@ import { haversineDistance } from '../utils/duration-estimator';
 
 /**
  * Schedule meals into a day timeline
+ *
+ * CRITICAL: Now accepts a TripLedger to track used restaurants and prevent duplicates.
+ * The ledger is updated in-place when a restaurant is selected.
+ *
+ * When options.includeRestaurants=false, meals are inserted as time blocks only
+ * with area hints but no specific venue selection.
+ *
+ * @param timeline - The day timeline to add meals to
+ * @param restaurants - All available restaurant candidates
+ * @param config - Meal configuration
+ * @param ledger - TripLedger for tracking used candidates (optional for backward compat)
+ * @param options - Meal scheduling options (includeRestaurants flag)
  */
 export function scheduleMeals(
   timeline: DayTimeline,
   restaurants: EnrichedCandidate[],
-  config: MealConfig = DEFAULT_MEAL_CONFIG
+  config: MealConfig = DEFAULT_MEAL_CONFIG,
+  ledger?: TripLedger,
+  options: MealSchedulingOptions | RestaurantValidationPolicy = DEFAULT_MEAL_SCHEDULING_OPTIONS
 ): DayTimeline {
+  // Handle backward compatibility: if options is RestaurantValidationPolicy, convert
+  const schedulingOptions: MealSchedulingOptions = 
+    'includeRestaurants' in options 
+      ? options 
+      : { includeRestaurants: false, restaurantPolicy: options };
+
   const meals: ('lunch' | 'dinner')[] = ['lunch', 'dinner'];
   const newSlots = [...timeline.slots];
 
   // Determine meal policy based on day type
-  let policy: MealIntent;
-  if (timeline.isBigRockDay) {
-    policy = config.defaultIntentByDayType.bigRock;
+  let mealIntent: MealIntent;
+  if (!schedulingOptions.includeRestaurants) {
+    // When restaurants disabled, always use area_only
+    mealIntent = 'area_only';
+  } else if (timeline.isBigRockDay) {
+    mealIntent = config.defaultIntentByDayType.bigRock;
   } else {
-    policy = config.defaultIntentByDayType.normal;
+    mealIntent = config.defaultIntentByDayType.normal;
   }
 
   let totalMealMin = 0;
@@ -60,18 +108,28 @@ export function scheduleMeals(
 
     if (insertionPoint === null) continue;
 
-    // Get nearby activities for restaurant selection
+    // Get nearby activities for area hint calculation
     const nearbyActivities = findNearbyActivities(newSlots, insertionPoint, 3);
 
-    // Create meal slot with appropriate policy
-    const mealSlot = createMealSlot(
-      mealType,
-      mealConfig,
-      policy,
-      restaurants,
-      nearbyActivities,
-      timeline.zoneId
-    );
+    // Create meal slot
+    const mealSlot = schedulingOptions.includeRestaurants
+      ? createMealSlotWithLedger(
+          mealType,
+          mealConfig,
+          mealIntent,
+          restaurants,
+          nearbyActivities,
+          timeline.zoneId,
+          timeline.dayIndex,
+          ledger,
+          schedulingOptions.restaurantPolicy
+        )
+      : createMealSlotWithoutVenue(
+          mealType,
+          mealConfig,
+          nearbyActivities,
+          timeline.primaryZoneName
+        );
 
     // Insert meal slot
     const mealTimelineSlot: TimelineSlot = {
@@ -94,29 +152,85 @@ export function scheduleMeals(
   });
 }
 
+/**
+ * Create a meal slot WITHOUT venue selection (time block only)
+ * Used when includeRestaurants=false
+ */
+export function createMealSlotWithoutVenue(
+  mealType: 'breakfast' | 'lunch' | 'dinner',
+  config: { window: [number, number]; duration: number },
+  nearbyActivities: EnrichedCandidate[],
+  zoneName?: string
+): MealSlot {
+  // Calculate area hint from nearby activities or zone
+  let areaHint = zoneName || 'the area';
+  
+  if (nearbyActivities.length > 0) {
+    // Use vicinity of nearest activity if available
+    const nearestWithVicinity = nearbyActivities.find(a => a.vicinity);
+    if (nearestWithVicinity?.vicinity) {
+      // Extract neighborhood from vicinity (usually format: "Street, Neighborhood, City")
+      const parts = nearestWithVicinity.vicinity.split(',');
+      if (parts.length >= 2) {
+        areaHint = parts[1].trim();
+      } else {
+        areaHint = nearestWithVicinity.vicinity;
+      }
+    }
+  }
+
+  return {
+    type: mealType,
+    windowStart: config.window[0],
+    windowEnd: config.window[1],
+    durationMin: config.duration,
+    intent: 'area_only',
+    venue: undefined,
+    nearbyOptions: undefined,
+    areaHint,
+    note: `${mealType.charAt(0).toUpperCase() + mealType.slice(1)} break - explore local restaurants near ${areaHint}`,
+  };
+}
+
 // =============================================================================
 // MEAL SLOT CREATION
 // =============================================================================
 
 /**
  * Create a meal slot with restaurant selection based on policy
+ * CRITICAL: Uses ledger for used-aware filtering to prevent duplicates
  */
-export function createMealSlot(
+export function createMealSlotWithLedger(
   mealType: 'breakfast' | 'lunch' | 'dinner',
   config: { window: [number, number]; duration: number },
   policy: MealIntent,
   restaurants: EnrichedCandidate[],
   nearbyActivities: EnrichedCandidate[],
-  zoneId: number
+  zoneId: number,
+  dayIndex: number,
+  ledger?: TripLedger,
+  restaurantPolicy: RestaurantValidationPolicy = DEFAULT_RESTAURANT_POLICY
 ): MealSlot {
-  // CRITICAL: Filter to only actual restaurants/cafes
-  const validRestaurants = filterValidRestaurants(restaurants);
+  // Step 1: Filter to only actual restaurants/cafes using strict validation
+  let validRestaurants = filterValidRestaurantsStrict(restaurants, restaurantPolicy);
+
+  // Step 2: CRITICAL - Filter out already-used restaurants
+  if (ledger) {
+    const beforeCount = validRestaurants.length;
+    validRestaurants = validRestaurants.filter(r => !ledger.has(r));
+    const filtered = beforeCount - validRestaurants.length;
+    if (filtered > 0) {
+      console.log(`  → ${mealType}: Filtered ${filtered} already-used restaurants`);
+    }
+  }
 
   // Log warning if no valid restaurants found
   if (validRestaurants.length === 0) {
     console.warn(`⚠️ No valid restaurants found for ${mealType} in zone ${zoneId}`);
     console.warn(`  Total candidates: ${restaurants.length}`);
-    console.warn(`  Invalid candidates: ${restaurants.map(r => `${r.name} (${r.googleTypes?.join(', ')})`).join(', ')}`);
+    if (restaurants.length > 0) {
+      console.warn(`  Sample invalid: ${restaurants.slice(0, 3).map(r => `${r.name} (${r.googleTypes?.join(', ')})`).join(', ')}`);
+    }
   }
 
   // Calculate centroid of nearby activities
@@ -143,7 +257,14 @@ export function createMealSlot(
     case 'suggested':
       // Pick top restaurant if available
       if (scoredRestaurants.length > 0) {
-        mealSlot.venue = scoredRestaurants[0].restaurant;
+        const selectedVenue = scoredRestaurants[0].restaurant;
+        mealSlot.venue = selectedVenue;
+
+        // CRITICAL: Mark as used immediately to prevent reuse in same day
+        if (ledger) {
+          ledger.add(selectedVenue, dayIndex, 'meal');
+          console.log(`  → ${mealType}: Selected "${selectedVenue.name}" (marked as used)`);
+        }
       } else {
         // Fallback: no specific venue, just area suggestion
         console.warn(`⚠️ No restaurants available for ${mealType}, falling back to area suggestion`);
@@ -151,7 +272,7 @@ export function createMealSlot(
       break;
 
     case 'area_only':
-      // Provide 2-4 nearby options if available
+      // Provide 2-4 nearby options if available (don't mark as used)
       if (scoredRestaurants.length > 0) {
         mealSlot.nearbyOptions = scoredRestaurants
           .slice(0, 4)
@@ -166,6 +287,32 @@ export function createMealSlot(
   return mealSlot;
 }
 
+/**
+ * Create a meal slot with restaurant selection based on policy
+ * @deprecated Use createMealSlotWithLedger for proper duplicate prevention
+ */
+export function createMealSlot(
+  mealType: 'breakfast' | 'lunch' | 'dinner',
+  config: { window: [number, number]; duration: number },
+  policy: MealIntent,
+  restaurants: EnrichedCandidate[],
+  nearbyActivities: EnrichedCandidate[],
+  zoneId: number
+): MealSlot {
+  // Delegate to new function without ledger (backward compat)
+  return createMealSlotWithLedger(
+    mealType,
+    config,
+    policy,
+    restaurants,
+    nearbyActivities,
+    zoneId,
+    -1, // Unknown day index
+    undefined, // No ledger
+    DEFAULT_RESTAURANT_POLICY
+  );
+}
+
 // =============================================================================
 // RESTAURANT FILTERING
 // =============================================================================
@@ -173,6 +320,7 @@ export function createMealSlot(
 /**
  * Filter to only include actual restaurants and cafes
  * This is CRITICAL to prevent assigning temples/markets to meal slots
+ * @deprecated Use filterValidRestaurantsStrict from restaurant-validation.ts
  */
 export function filterValidRestaurants(
   candidates: EnrichedCandidate[]
@@ -183,6 +331,7 @@ export function filterValidRestaurants(
 /**
  * Check if a candidate is a valid restaurant/cafe
  * IMPORTANT: Excludes religious sites, temples, markets, and other non-food establishments
+ * @deprecated Use isValidRestaurantStrict from restaurant-validation.ts for stricter validation
  */
 export function isValidRestaurant(candidate: EnrichedCandidate): boolean {
   const nameLower = candidate.name.toLowerCase();
@@ -194,17 +343,17 @@ export function isValidRestaurant(candidate: EnrichedCandidate): boolean {
     'church', 'mosque', 'synagogue', 'place_of_worship',
     'tourist_attraction', 'point_of_interest', 'museum',
     'park', 'zoo', 'aquarium', 'amusement_park',
-    'market', 'shopping_mall', 'store', 'supermarket',     // ADD: Markets & stores
-    'establishment', 'grocery_or_supermarket'              // ADD: Generic establishments
+    'market', 'shopping_mall', 'store', 'supermarket',     // Markets & stores
+    'establishment', 'grocery_or_supermarket'              // Generic establishments
   ];
 
   const excludedNamePatterns = [
     'temple', 'mandir', 'kovil', 'gurdwara', 'masjid', 'mosque',
     'church', 'cathedral', 'chapel', 'synagogue', 'dargah',
     'museum', 'fort', 'palace', 'zoo', 'park',
-    'bazaar', 'market', 'rythu', 'mandi',                  // ADD: Market patterns
-    'shopping', 'mall', 'store', 'supermarket',           // ADD: Shopping patterns
-    'model', 'wholesale'                                   // ADD: Wholesale/model patterns
+    'bazaar', 'market', 'rythu', 'mandi', 'chowk', 'haat',  // Market patterns
+    'shopping', 'mall', 'store', 'supermarket',             // Shopping patterns
+    'model', 'wholesale'                                     // Wholesale/model patterns
   ];
 
   // If any excluded type is present, NOT a restaurant

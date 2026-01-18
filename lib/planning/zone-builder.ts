@@ -6,6 +6,12 @@
  * - Zone merging for close clusters
  * - Day-to-zone assignment with big rock handling
  * - Utility-based zone scoring
+ *
+ * v3 Enhancements:
+ * - Zone validation with diameter and balance checks
+ * - DBSCAN fallback for corridor-like cities
+ * - Big Rock zone seeding
+ * - PlanTrace logging
  */
 
 import {
@@ -14,6 +20,17 @@ import {
   ZoneConfig,
   DEFAULT_ZONE_CONFIG,
 } from './types';
+import {
+  ZoneV3,
+  ZoneBuilderResult,
+  EnrichedCandidateCanonical,
+  CanonicalPlaceId,
+} from '../types/optimizer-v3';
+import { OptimizerV3Config, DEFAULT_OPTIMIZER_V3_CONFIG } from '../config/optimizer-config';
+import { getFeatureFlags } from '../config/feature-flags';
+import { validateZones, rebalanceZones, haversineDistance as haversineDistanceV3 } from './zone-validator';
+import { dbscanClustering, handleInsufficientClusters, createDBSCANConfig } from './dbscan-clustering';
+import { PlanTraceBuilder } from '../observability/plan-trace';
 import { haversineDistance } from '../utils/duration-estimator';
 
 // =============================================================================
@@ -468,4 +485,318 @@ export function wouldCrossZone(
   candidate: EnrichedCandidate
 ): boolean {
   return candidate.zoneId !== undefined && candidate.zoneId !== dayZoneId;
+}
+
+
+// =============================================================================
+// V3 ZONE BUILDING
+// =============================================================================
+
+/**
+ * Build zones using v3 algorithm with validation and fallback.
+ *
+ * Strategy:
+ * 1. Identify Big Rocks and create seed zones
+ * 2. Run K-means clustering
+ * 3. Validate zones (diameter, balance)
+ * 4. If validation fails and ENABLE_DBSCAN_FALLBACK, try DBSCAN
+ * 5. Rebalance if needed
+ * 6. Log to PlanTrace
+ */
+export function buildZonesV3(
+  candidates: EnrichedCandidateCanonical[],
+  numDays: number,
+  anchors: Set<CanonicalPlaceId>,
+  config: OptimizerV3Config = DEFAULT_OPTIMIZER_V3_CONFIG,
+  trace?: PlanTraceBuilder
+): ZoneBuilderResult {
+  const featureFlags = getFeatureFlags();
+
+  if (candidates.length === 0) {
+    const emptyResult: ZoneBuilderResult = {
+      zones: [],
+      assignmentByCanonicalId: {},
+      pinnedByCanonicalId: {},
+      validation: {
+        isValid: true,
+        violations: [],
+        zoneDiameters: new Map(),
+        zoneLoads: new Map(),
+      },
+      fallbackUsed: false,
+      method: 'kmeans',
+    };
+    return emptyResult;
+  }
+
+  // Step 1: Identify Big Rocks and pin them
+  const bigRocks = candidates.filter(c => c.isBigRock);
+  const pinnedByCanonicalId: Record<CanonicalPlaceId, 'anchor' | 'big_rock'> = {};
+
+  // Pin anchors
+  for (const anchorId of anchors) {
+    pinnedByCanonicalId[anchorId] = 'anchor';
+  }
+
+  // Pin top numDays Big Rocks as zone seeds
+  const sortedBigRocks = [...bigRocks].sort((a, b) => b.utilityScore - a.utilityScore);
+  const pinnedBigRocks = sortedBigRocks.slice(0, numDays);
+  for (const br of pinnedBigRocks) {
+    if (!pinnedByCanonicalId[br.canonicalId]) {
+      pinnedByCanonicalId[br.canonicalId] = 'big_rock';
+    }
+  }
+
+  console.log(`[ZoneBuilder v3] Building zones for ${candidates.length} candidates, ${numDays} days`);
+  console.log(`  → ${bigRocks.length} Big Rocks, ${pinnedBigRocks.length} pinned as seeds`);
+  console.log(`  → ${anchors.size} anchors pinned`);
+
+  // Step 2: Run K-means clustering
+  let zones = kMeansClusteringV3(candidates, numDays, pinnedBigRocks);
+  let method: 'kmeans' | 'dbscan' | 'graph' = 'kmeans';
+  let fallbackUsed = false;
+
+  // Step 3: Validate zones
+  let validation = validateZones(zones, config);
+
+  // Step 4: If validation fails, try DBSCAN fallback
+  if (!validation.isValid && featureFlags.ENABLE_DBSCAN_FALLBACK) {
+    console.log(`[ZoneBuilder v3] K-means validation failed, trying DBSCAN fallback`);
+    console.log(`  → Violations: ${validation.violations.map(v => v.type).join(', ')}`);
+
+    const dbscanConfig = createDBSCANConfig(config);
+    zones = dbscanClustering(candidates, dbscanConfig);
+    zones = handleInsufficientClusters(zones, numDays, candidates);
+    method = 'dbscan';
+    fallbackUsed = true;
+
+    // Re-validate
+    validation = validateZones(zones, config);
+  }
+
+  // Step 5: Rebalance if still imbalanced
+  const pinnedIds = new Set(Object.keys(pinnedByCanonicalId));
+  if (!validation.isValid) {
+    console.log(`[ZoneBuilder v3] Attempting rebalance`);
+    zones = rebalanceZones(zones, pinnedIds, config);
+    validation = validateZones(zones, config);
+  }
+
+  // Step 6: Build assignment map
+  const assignmentByCanonicalId: Record<CanonicalPlaceId, number> = {};
+  for (const zone of zones) {
+    for (const c of zone.candidates) {
+      assignmentByCanonicalId[c.canonicalId] = zone.id;
+    }
+  }
+
+  // Log to PlanTrace
+  if (trace) {
+    const zoneDiameters: Record<number, number> = {};
+    const zoneLoads: Record<number, { poiCount: number; plannedMinutes: number }> = {};
+
+    for (const [zoneId, diameter] of validation.zoneDiameters) {
+      zoneDiameters[zoneId] = diameter;
+    }
+    for (const [zoneId, load] of validation.zoneLoads) {
+      zoneLoads[zoneId] = load;
+    }
+
+    trace.logZoning({
+      method,
+      zoneCount: zones.length,
+      zoneDiameters,
+      zoneLoads,
+      validationPassed: validation.isValid,
+      fallbackUsed,
+      pinnedCandidates: pinnedByCanonicalId,
+    });
+  }
+
+  console.log(`[ZoneBuilder v3] Complete: ${zones.length} zones, method=${method}, valid=${validation.isValid}`);
+
+  return {
+    zones,
+    assignmentByCanonicalId,
+    pinnedByCanonicalId,
+    validation,
+    fallbackUsed,
+    method,
+  };
+}
+
+/**
+ * K-means clustering for v3 with Big Rock seeding.
+ */
+function kMeansClusteringV3(
+  candidates: EnrichedCandidateCanonical[],
+  k: number,
+  bigRockSeeds: EnrichedCandidateCanonical[]
+): ZoneV3[] {
+  if (candidates.length === 0) return [];
+  if (candidates.length <= k) {
+    // Each candidate is its own zone
+    return candidates.map((c, idx) => createZoneV3(idx, [c]));
+  }
+
+  // Initialize centroids: use Big Rock locations as seeds, then k-means++ for rest
+  const centroids: Array<{ lat: number; lng: number }> = [];
+
+  // Add Big Rock seeds first
+  for (const br of bigRockSeeds.slice(0, k)) {
+    centroids.push({ ...br.location });
+  }
+
+  // Fill remaining with k-means++ from non-Big-Rock candidates
+  const nonBigRocks = candidates.filter(c => !c.isBigRock);
+  while (centroids.length < k && nonBigRocks.length > 0) {
+    const nextCentroid = selectNextCentroidKMeansPlusPlus(nonBigRocks, centroids);
+    if (nextCentroid) {
+      centroids.push(nextCentroid);
+    } else {
+      break;
+    }
+  }
+
+  // If still not enough centroids, use any remaining candidates
+  if (centroids.length < k) {
+    for (const c of candidates) {
+      if (centroids.length >= k) break;
+      const isDuplicate = centroids.some(
+        cent => cent.lat === c.location.lat && cent.lng === c.location.lng
+      );
+      if (!isDuplicate) {
+        centroids.push({ ...c.location });
+      }
+    }
+  }
+
+  // Run K-means iterations
+  let assignments: number[] = [];
+  const maxIterations = 20;
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    // Assign candidates to nearest centroid
+    const newAssignments = candidates.map(c => {
+      let minDist = Infinity;
+      let minIdx = 0;
+
+      for (let i = 0; i < centroids.length; i++) {
+        const dist = haversineDistanceV3(
+          c.location.lat,
+          c.location.lng,
+          centroids[i].lat,
+          centroids[i].lng
+        );
+        if (dist < minDist) {
+          minDist = dist;
+          minIdx = i;
+        }
+      }
+      return minIdx;
+    });
+
+    // Check convergence
+    if (arraysEqualV3(newAssignments, assignments)) {
+      break;
+    }
+    assignments = newAssignments;
+
+    // Recompute centroids (but keep Big Rock seeds fixed)
+    for (let i = bigRockSeeds.length; i < centroids.length; i++) {
+      const clusterCandidates = candidates.filter((_, idx) => assignments[idx] === i);
+      if (clusterCandidates.length > 0) {
+        centroids[i] = {
+          lat: clusterCandidates.reduce((s, c) => s + c.location.lat, 0) / clusterCandidates.length,
+          lng: clusterCandidates.reduce((s, c) => s + c.location.lng, 0) / clusterCandidates.length,
+        };
+      }
+    }
+  }
+
+  // Build zone objects
+  const zones: ZoneV3[] = [];
+  for (let i = 0; i < centroids.length; i++) {
+    const zoneCandidates = candidates.filter((_, idx) => assignments[idx] === i);
+    if (zoneCandidates.length > 0) {
+      zones.push(createZoneV3(i, zoneCandidates));
+    }
+  }
+
+  // Renumber zones sequentially
+  return zones.map((z, idx) => ({ ...z, id: idx }));
+}
+
+/**
+ * Select next centroid using k-means++ weighted probability.
+ */
+function selectNextCentroidKMeansPlusPlus(
+  candidates: EnrichedCandidateCanonical[],
+  existingCentroids: Array<{ lat: number; lng: number }>
+): { lat: number; lng: number } | null {
+  if (candidates.length === 0) return null;
+  if (existingCentroids.length === 0) {
+    // Pick highest utility candidate
+    const sorted = [...candidates].sort((a, b) => b.utilityScore - a.utilityScore);
+    return { ...sorted[0].location };
+  }
+
+  // Compute squared distances to nearest centroid
+  const distances = candidates.map(c => {
+    const minDist = Math.min(
+      ...existingCentroids.map(cent =>
+        haversineDistanceV3(c.location.lat, c.location.lng, cent.lat, cent.lng)
+      )
+    );
+    return minDist * minDist;
+  });
+
+  const totalDist = distances.reduce((a, b) => a + b, 0);
+  if (totalDist === 0) return null;
+
+  // Weighted random selection
+  let target = Math.random() * totalDist;
+  for (let i = 0; i < candidates.length; i++) {
+    target -= distances[i];
+    if (target <= 0) {
+      const loc = candidates[i].location;
+      const isDuplicate = existingCentroids.some(
+        c => c.lat === loc.lat && c.lng === loc.lng
+      );
+      if (!isDuplicate) {
+        return { ...loc };
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Create a ZoneV3 from candidates.
+ */
+function createZoneV3(id: number, candidates: EnrichedCandidateCanonical[]): ZoneV3 {
+  const centroid = candidates.length > 0
+    ? {
+        lat: candidates.reduce((s, c) => s + c.location.lat, 0) / candidates.length,
+        lng: candidates.reduce((s, c) => s + c.location.lng, 0) / candidates.length,
+      }
+    : { lat: 0, lng: 0 };
+
+  return {
+    id,
+    centroid,
+    candidates,
+    totalUtility: candidates.reduce((sum, c) => sum + c.utilityScore, 0),
+    hasBigRock: candidates.some(c => c.isBigRock),
+    bigRocks: candidates.filter(c => c.isBigRock),
+  };
+}
+
+function arraysEqualV3(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }

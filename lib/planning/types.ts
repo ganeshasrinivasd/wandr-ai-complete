@@ -180,8 +180,12 @@ export interface MealSlot {
   windowEnd: number;
   durationMin: number;
   intent: MealIntent;
-  venue?: EnrichedCandidate;         // If booked/suggested
+  venue?: EnrichedCandidate;         // If booked/suggested (null when includeRestaurants=false)
   nearbyOptions?: EnrichedCandidate[]; // If area_only, 2-4 options
+  /** Area/neighborhood hint for finding food (used when no venue selected) */
+  areaHint?: string;
+  /** Optional note about the meal slot */
+  note?: string;
 }
 
 export interface MealConfig {
@@ -339,6 +343,8 @@ export interface OptimizerConfig {
   zoneConfig: ZoneConfig;
   mealConfig: MealConfig;
   maxRepairIterations: number;
+  /** If false, meals are time blocks only with no restaurant venues (default: false) */
+  includeRestaurants: boolean;
 }
 
 export const DEFAULT_OPTIMIZER_CONFIG: OptimizerConfig = {
@@ -350,4 +356,5 @@ export const DEFAULT_OPTIMIZER_CONFIG: OptimizerConfig = {
   zoneConfig: DEFAULT_ZONE_CONFIG,
   mealConfig: DEFAULT_MEAL_CONFIG,
   maxRepairIterations: 10,
+  includeRestaurants: false,      // Disabled by default - meals are time blocks only
 };

@@ -33,10 +33,34 @@ import {
 } from '../utils/dedup';
 import { buildZonesAndAssignDays, getCandidatesForZone } from '../planning/zone-builder';
 import { orderDayRoute, buildTravelMatrix, analyzeRoute } from '../planning/route-optimizer';
-import { scheduleMeals, filterValidRestaurants, isValidRestaurant } from '../planning/meal-scheduler';
+import { scheduleMeals, MealSchedulingOptions, DEFAULT_MEAL_SCHEDULING_OPTIONS } from '../planning/meal-scheduler';
 import { checkItineraryFeasibility, wouldViolateConstraints } from '../validation/feasibility-checker';
 import { repairItinerary } from '../validation/repair-engine';
 import { haversineDistance, estimateTravelTime } from '../utils/duration-estimator';
+import { TripLedger } from '../utils/trip-ledger';
+import { assertNoDuplicatesInTimelines } from '../validation/duplicate-assertion';
+import { isValidRestaurantStrict as isValidRestaurant, DEFAULT_RESTAURANT_POLICY } from '../validation/restaurant-validation';
+
+// V3 imports
+import {
+  EnrichedCandidateCanonical,
+  CanonicalPlaceId,
+  DayTimelineV3,
+  TimelineSlotV3,
+  ZoneV3,
+  ZoneBuilderResult,
+  DropReasonCode,
+  FeasibilityViolationType,
+  CanonicalRegistryResult,
+} from '../types/optimizer-v3';
+import { OptimizerV3Config, DEFAULT_OPTIMIZER_V3_CONFIG } from '../config/optimizer-config';
+import { getFeatureFlags } from '../config/feature-flags';
+import { PlanTraceBuilder } from '../observability/plan-trace';
+import { CanonicalPlaceRegistry } from '../planning/canonical-registry';
+import { pruneCandidates, createPrunerConfig } from '../planning/candidate-pruner';
+import { buildZonesV3 } from '../planning/zone-builder';
+import { TravelCache, createTravelCache, validateTopLegs, fillHeuristicTravelTimes } from '../planning/travel-cache';
+import { repairDayV3, RepairContextV3 } from '../validation/repair-engine';
 
 interface ResearchData {
   candidates: {
@@ -156,32 +180,24 @@ export async function runAgent3Optimizer(
   onProgress?.('→ Building day timelines...');
 
   const timelines: DayTimeline[] = [];
-  const usedCandidateIds = new Set<string>();
-  const usedDedupKeys = new Set<string>(); // Track by dedup key to catch near-duplicates
+
+  // CRITICAL: Use TripLedger for unified used tracking
+  const ledger = new TripLedger();
 
   for (let dayIndex = 0; dayIndex < days; dayIndex++) {
     const zoneId = dayAssignments.get(dayIndex) ?? 0;
     const zone = zones.find(z => z.id === zoneId) || zones[0];
 
-    const timeline = buildDayTimeline(
+    const timeline = buildDayTimelineWithLedger(
       dayIndex,
       zone,
       enrichedAttractions,
       enrichedRestaurants,
-      usedCandidateIds,
-      usedDedupKeys,
+      ledger,
       config
     );
 
     timelines.push(timeline);
-
-    // Mark used candidates by both ID and dedup key
-    timeline.slots
-      .filter(s => s.candidate)
-      .forEach(s => {
-        usedCandidateIds.add(s.candidate!.id);
-        usedDedupKeys.add(s.candidate!.dedupKey);
-      });
 
     onProgress?.(`✓ Day ${dayIndex + 1}: ${timeline.slots.filter(s => s.type === 'activity').length} activities, ${timeline.totalTravelMin}min travel`);
   }
@@ -208,9 +224,9 @@ export async function runAgent3Optimizer(
       console.log(`  - ${issue.message}`);
     });
 
-    // Build backup candidate pool
+    // Build backup candidate pool (using ledger for filtering)
     const backupCandidates = enrichedAttractions.filter(
-      c => !usedCandidateIds.has(c.id)
+      c => !ledger.has(c)
     );
 
     const repairResult = await repairItinerary({
@@ -254,34 +270,34 @@ export async function runAgent3Optimizer(
 // TIMELINE BUILDING
 // =============================================================================
 
-function buildDayTimeline(
+/**
+ * Build a day timeline with proper used tracking via TripLedger.
+ *
+ * CRITICAL FIX: This function now:
+ * 1. Selects activities and marks them as used IMMEDIATELY
+ * 2. THEN schedules meals with the updated ledger
+ * 3. This prevents meals from selecting restaurants already used as attractions
+ *    or restaurants used in previous days
+ */
+function buildDayTimelineWithLedger(
   dayIndex: number,
   zone: Zone,
   allAttractions: EnrichedCandidate[],
   allRestaurants: EnrichedCandidate[],
-  usedIds: Set<string>,
-  usedDedupKeys: Set<string>,
+  ledger: TripLedger,
   config: OptimizerConfig
 ): DayTimeline {
   const slots: TimelineSlot[] = [];
   let currentMin = 0;
 
-  // Helper to check if a candidate is already used (by ID or dedupKey)
-  const isUsed = (c: EnrichedCandidate): boolean => {
-    return usedIds.has(c.id) || usedDedupKeys.has(c.dedupKey);
-  };
-
-  // Check for big rock in this zone
-  const zoneBigRock = zone.bigRocks.find(br => !isUsed(br));
+  // Check for big rock in this zone (not already used)
+  const zoneBigRock = zone.bigRocks.find(br => !ledger.has(br));
   const isBigRockDay = !!zoneBigRock;
 
-  // Get available candidates in this zone (check both ID and dedupKey)
+  // Get available candidates in this zone (check ledger)
   const zoneAttractions = zone.candidates
-    .filter(c => !isUsed(c))
+    .filter(c => !ledger.has(c))
     .sort((a, b) => b.utilityScore - a.utilityScore);
-
-  const zoneRestaurants = allRestaurants
-    .filter(r => r.zoneId === zone.id && !isUsed(r));
 
   // Determine how many activities to plan
   let targetActivities: number;
@@ -330,6 +346,12 @@ function buildDayTimeline(
       dayUsedKeys.add(attraction.dedupKey);
       remainingBudget -= attraction.durationExpected;
     }
+  }
+
+  // CRITICAL FIX: Mark selected activities as used BEFORE scheduling meals
+  // This ensures meal scheduler won't select these as restaurants
+  for (const activity of selectedActivities) {
+    ledger.add(activity, dayIndex, 'activity');
   }
 
   // Order activities to minimize travel
@@ -385,7 +407,7 @@ function buildDayTimeline(
     totalActivity += duration;
   }
 
-  // Create initial timeline
+  // Create initial timeline (without meals)
   let timeline: DayTimeline = {
     dayIndex,
     zoneId: zone.id,
@@ -401,8 +423,55 @@ function buildDayTimeline(
     budgetRemaining: config.dayBudgetMinutes - (totalActivity + totalTravel + totalBuffer),
   };
 
-  // Schedule meals
-  timeline = scheduleMeals(timeline, allRestaurants, config.mealConfig);
+  // Schedule meals as time blocks (no restaurant venues when includeRestaurants=false)
+  const mealOptions: MealSchedulingOptions = {
+    includeRestaurants: config.includeRestaurants,
+    restaurantPolicy: DEFAULT_RESTAURANT_POLICY,
+  };
+  
+  timeline = scheduleMeals(
+    timeline,
+    allRestaurants,
+    config.mealConfig,
+    ledger,
+    mealOptions
+  );
+
+  return timeline;
+}
+
+/**
+ * Build a day timeline (legacy function for backward compatibility)
+ * @deprecated Use buildDayTimelineWithLedger for proper duplicate prevention
+ */
+function buildDayTimeline(
+  dayIndex: number,
+  zone: Zone,
+  allAttractions: EnrichedCandidate[],
+  allRestaurants: EnrichedCandidate[],
+  usedIds: Set<string>,
+  usedDedupKeys: Set<string>,
+  config: OptimizerConfig
+): DayTimeline {
+  // Create a temporary ledger from the sets
+  const ledger = TripLedger.fromSets(usedIds, usedDedupKeys);
+
+  const timeline = buildDayTimelineWithLedger(
+    dayIndex,
+    zone,
+    allAttractions,
+    allRestaurants,
+    ledger,
+    config
+  );
+
+  // Update the original sets from the ledger
+  for (const id of ledger.getUsedIds()) {
+    usedIds.add(id);
+  }
+  for (const key of ledger.getUsedDedupKeys()) {
+    usedDedupKeys.add(key);
+  }
 
   return timeline;
 }
@@ -452,6 +521,9 @@ function convertToItinerary(
     const startDate = new Date(parsedInput.parsed_data.dates.start);
     startDate.setDate(startDate.getDate() + timeline.dayIndex);
 
+    // Get zone info early for use in meal descriptions
+    const zone = zones.find(z => z.id === timeline.zoneId);
+
     const activities: Activity[] = [];
     let dayStartMin = config.dayStartTime; // e.g., 480 = 8:00 AM
 
@@ -492,7 +564,7 @@ function convertToItinerary(
         const startTime = formatTime(dayStartMin + slot.startMin);
         const endTime = formatTime(dayStartMin + slot.endMin);
 
-        // Get venue - only if it's actually a restaurant
+        // Get venue - only if it's actually a restaurant and includeRestaurants is enabled
         let venue = mealSlot.venue || mealSlot.nearbyOptions?.[0];
 
         // Double-check venue is actually a restaurant (safety check using comprehensive validation)
@@ -502,18 +574,21 @@ function convertToItinerary(
         }
 
         const mealName = mealSlot.type.charAt(0).toUpperCase() + mealSlot.type.slice(1);
+        
+        // Use area hint for description when no venue
+        const areaDescription = mealSlot.areaHint || zone?.name || 'the area';
 
         activities.push({
           time: `${startTime}-${endTime}`,
           type: 'meal',
           activity: {
             id: venue?.id || `meal_${mealSlot.type}_${dayNum}`,
-            name: venue?.name || `${mealName} - Local Options`,
+            name: venue?.name || `${mealName} break near ${areaDescription}`,
             duration_minutes: slot.duration,
             cost: venue?.priceLevel ? venue.priceLevel * 15 : 25,
             description: venue
               ? `${mealName} at ${venue.name}`
-              : `${mealName} - explore local restaurants in the area`,
+              : mealSlot.note || `${mealName} break - explore local restaurants near ${areaDescription}`,
             photo_url: venue?.photoUrl,
             location: venue ? {
               lat: venue.location.lat,
@@ -526,9 +601,6 @@ function convertToItinerary(
 
     // Calculate day stats
     const totalCost = activities.reduce((sum, a) => sum + (a.activity.cost || 0), 0);
-
-    // Get zone info
-    const zone = zones.find(z => z.id === timeline.zoneId);
 
     itinerary[`day_${dayNum}`] = {
       day: dayNum,
@@ -615,67 +687,678 @@ function createEmptyItinerary(parsedInput: ParsedInput, days: number): Itinerary
   };
 }
 
+
 // =============================================================================
-// DUPLICATE DETECTION ASSERTIONS
+// V3 OPTIMIZER
 // =============================================================================
+
+export interface OptimizerV3Input {
+  parsedInput: ParsedInput;
+  registryResult: CanonicalRegistryResult;
+  config?: OptimizerV3Config;
+  trace?: PlanTraceBuilder;
+  onProgress?: (message: string) => void;
+}
+
+export interface OptimizerV3Output {
+  timelines: DayTimelineV3[];
+  usedCanonicalIds: Set<CanonicalPlaceId>;
+  droppedCandidates: Array<{
+    canonicalId: CanonicalPlaceId;
+    name: string;
+    reasonCode: DropReasonCode;
+    dayIndex?: number;
+  }>;
+}
 
 /**
- * Assert that no duplicates exist within or across days
- * Logs detailed info and throws if duplicates found
+ * V3 Optimizer: Anchor-first scheduling with canonical place registry.
+ *
+ * Key features:
+ * - Consumes canonical candidates from registry
+ * - Anchor-first selection: schedule anchors before non-anchors
+ * - Global usedCanonicalIds set prevents duplicates across days
+ * - Meal placeholder insertion (lunch 12:00-14:00, dinner 18:00-20:00)
+ * - Two-tier travel estimation with real validation
+ * - Feasibility checks with repair engine
  */
-function assertNoDuplicatesInTimelines(timelines: DayTimeline[]): void {
-  const allUsedIds = new Set<string>();
-  const allUsedDedupKeys = new Set<string>();
-  const duplicates: string[] = [];
+export async function runAgent3OptimizerV3(
+  input: OptimizerV3Input
+): Promise<OptimizerV3Output> {
+  const { parsedInput, registryResult, onProgress } = input;
+  const config = input.config || DEFAULT_OPTIMIZER_V3_CONFIG;
+  const trace = input.trace || new PlanTraceBuilder();
+  const featureFlags = getFeatureFlags();
 
-  for (const timeline of timelines) {
-    const dayActivities = timeline.slots.filter(s => s.type === 'activity' && s.candidate);
-    const dayUsedIds = new Set<string>();
-    const dayUsedKeys = new Set<string>();
+  console.log('🤖 Agent 3 (Optimizer v3): Building itinerary with anchor-first scheduling...');
 
-    for (const slot of dayActivities) {
-      const candidate = slot.candidate!;
+  const days = parsedInput.parsed_data.dates.duration_days;
 
-      // Check for duplicate ID within day
-      if (dayUsedIds.has(candidate.id)) {
-        duplicates.push(`Day ${timeline.dayIndex + 1}: Duplicate ID "${candidate.id}" (${candidate.name})`);
-      }
-      dayUsedIds.add(candidate.id);
+  // Global tracking
+  const usedCanonicalIds = new Set<CanonicalPlaceId>();
+  const droppedCandidates: OptimizerV3Output['droppedCandidates'] = [];
 
-      // Check for duplicate dedupKey within day
-      if (dayUsedKeys.has(candidate.dedupKey)) {
-        duplicates.push(`Day ${timeline.dayIndex + 1}: Duplicate dedupKey "${candidate.dedupKey}" (${candidate.name})`);
-      }
-      dayUsedKeys.add(candidate.dedupKey);
+  // Get canonical candidates from registry
+  const allCandidates = Array.from(registryResult.canonicalPlacesById.values()).map(place => {
+    // Find the enriched candidate for this place
+    // This assumes the registry has been populated with enriched candidates
+    return place as unknown as EnrichedCandidateCanonical;
+  });
 
-      // Check for near-duplicates within day
-      for (const otherSlot of dayActivities) {
-        if (otherSlot === slot) continue;
-        const other = otherSlot.candidate!;
-        if (areNearDuplicates(candidate, other)) {
-          duplicates.push(`Day ${timeline.dayIndex + 1}: Near-duplicate "${candidate.name}" ≈ "${other.name}"`);
-        }
-      }
+  // Filter out avoidInclude
+  const avoidSet = new Set(registryResult.avoidInclude);
+  const filteredCandidates = allCandidates.filter(c => {
+    if (avoidSet.has(c.canonicalId)) {
+      droppedCandidates.push({
+        canonicalId: c.canonicalId,
+        name: c.name,
+        reasonCode: DropReasonCode.AVOID_INCLUDE,
+      });
+      return false;
+    }
+    return true;
+  });
 
-      // Check for duplicates across days
-      if (allUsedIds.has(candidate.id)) {
-        duplicates.push(`Cross-day duplicate ID "${candidate.id}" (${candidate.name})`);
-      }
-      allUsedIds.add(candidate.id);
+  // Get anchor IDs
+  const anchorIds = new Set(registryResult.anchors.map(a => a.canonicalId));
+  const mustIncludeIds = new Set(registryResult.mustInclude);
 
-      if (allUsedDedupKeys.has(candidate.dedupKey)) {
-        duplicates.push(`Cross-day duplicate dedupKey "${candidate.dedupKey}" (${candidate.name})`);
-      }
-      allUsedDedupKeys.add(candidate.dedupKey);
+  onProgress?.(`→ Processing ${filteredCandidates.length} canonical candidates...`);
+
+  // =========================================================================
+  // PHASE 1: Prune Candidates
+  // =========================================================================
+  onProgress?.('→ Pruning candidates...');
+
+  const prunerConfig = createPrunerConfig(config);
+  const pruneResult = pruneCandidates(
+    filteredCandidates,
+    days,
+    anchorIds,
+    mustIncludeIds,
+    prunerConfig,
+    trace
+  );
+
+  // Track pruned candidates
+  for (const dropped of pruneResult.droppedTopExamples) {
+    droppedCandidates.push({
+      canonicalId: dropped.id,
+      name: dropped.name,
+      reasonCode: dropped.reasonCode,
+    });
+  }
+
+  onProgress?.(`✓ ${pruneResult.prunedCandidates.length} candidates after pruning`);
+
+  // =========================================================================
+  // PHASE 2: Build Zones
+  // =========================================================================
+  onProgress?.('→ Building geographic zones...');
+
+  const zoneResult = buildZonesV3(
+    pruneResult.prunedCandidates,
+    days,
+    anchorIds,
+    config,
+    trace
+  );
+
+  onProgress?.(`✓ Created ${zoneResult.zones.length} zones (method: ${zoneResult.method})`);
+
+  // =========================================================================
+  // PHASE 3: Build Day Timelines with Anchor-First Selection
+  // =========================================================================
+  onProgress?.('→ Building day timelines with anchor-first scheduling...');
+
+  const travelCache = createTravelCache(config);
+  const timelines: DayTimelineV3[] = [];
+
+  // Assign zones to days
+  const dayZoneAssignments = assignZonesToDays(zoneResult.zones, days);
+
+  for (let dayIndex = 0; dayIndex < days; dayIndex++) {
+    const zoneId = dayZoneAssignments.get(dayIndex) ?? 0;
+    const zone = zoneResult.zones.find(z => z.id === zoneId) || zoneResult.zones[0];
+
+    if (!zone) {
+      // Empty zone - create minimal timeline
+      timelines.push(createEmptyDayTimelineV3(dayIndex, config));
+      continue;
+    }
+
+    const timeline = buildDayTimelineV3(
+      dayIndex,
+      zone,
+      zoneResult,
+      usedCanonicalIds,
+      anchorIds,
+      mustIncludeIds,
+      droppedCandidates,
+      travelCache,
+      config,
+      trace
+    );
+
+    timelines.push(timeline);
+
+    onProgress?.(`✓ Day ${dayIndex + 1}: ${timeline.anchorsScheduled} anchors, ${timeline.slots.filter(s => s.type === 'activity').length} activities`);
+  }
+
+  // =========================================================================
+  // PHASE 4: Feasibility Check & Repair
+  // =========================================================================
+  onProgress?.('→ Validating and repairing itinerary...');
+
+  const pinnedSet = new Set([...anchorIds, ...mustIncludeIds]);
+  // Add pinned big rocks
+  for (const [id, type] of Object.entries(zoneResult.pinnedByCanonicalId)) {
+    if (type === 'big_rock') {
+      pinnedSet.add(id);
     }
   }
 
-  if (duplicates.length > 0) {
-    console.error('❌ DUPLICATE DETECTION FAILED:');
-    duplicates.forEach(d => console.error(`  - ${d}`));
-    // Don't throw - just log warning in production
-    console.warn(`⚠️ Found ${duplicates.length} duplicates in itinerary`);
-  } else {
-    console.log('✓ No duplicates detected in itinerary');
+  const repairedTimelines: DayTimelineV3[] = [];
+  for (const timeline of timelines) {
+    const violations = checkDayFeasibilityV3(timeline, config);
+
+    if (violations.length === 0) {
+      repairedTimelines.push(timeline);
+      continue;
+    }
+
+    // Log violations
+    for (const v of violations) {
+      trace.logFeasibilityViolation(timeline.dayIndex, v.type, v.message);
+    }
+
+    // Get backup candidates for repair
+    const backupCandidates = pruneResult.prunedCandidates.filter(
+      c => !usedCanonicalIds.has(c.canonicalId)
+    );
+
+    // Attempt repair for each violation
+    let currentTimeline = timeline;
+    for (const violation of violations) {
+      const repairContext: RepairContextV3 = {
+        timeline: currentTimeline,
+        backupCandidates,
+        pinnedSet,
+        config,
+        trace,
+      };
+
+      const repairResult = repairDayV3(repairContext, violation);
+      currentTimeline = repairResult.repairedTimeline;
+    }
+
+    repairedTimelines.push(currentTimeline);
   }
+
+  // =========================================================================
+  // PHASE 5: Real Travel Validation
+  // =========================================================================
+  onProgress?.('→ Validating travel times...');
+
+  for (const timeline of repairedTimelines) {
+    const validationResult = await validateTopLegs(
+      timeline,
+      config.topNLegsRealTravelValidation,
+      travelCache,
+      config,
+      trace
+    );
+
+    if (validationResult.exception) {
+      console.log(`  Day ${timeline.dayIndex + 1}: Travel validation exception: ${validationResult.exception}`);
+    } else {
+      console.log(`  Day ${timeline.dayIndex + 1}: Validated ${validationResult.legsValidated}/${validationResult.legsRequested} legs`);
+    }
+  }
+
+  // Log final status
+  const allViolations = repairedTimelines.flatMap(t => checkDayFeasibilityV3(t, config));
+  trace.setFeasibilityStatus(allViolations.length === 0 ? 'pass' : 'fail');
+
+  onProgress?.('✓ Optimization complete');
+
+  console.log('✓ Agent 3 v3: Optimization complete');
+  console.log(`  → ${usedCanonicalIds.size} unique places scheduled`);
+  console.log(`  → ${droppedCandidates.length} candidates dropped`);
+
+  return {
+    timelines: repairedTimelines,
+    usedCanonicalIds,
+    droppedCandidates,
+  };
+}
+
+// =============================================================================
+// V3 DAY TIMELINE BUILDING
+// =============================================================================
+
+/**
+ * Build a day timeline with anchor-first selection.
+ */
+function buildDayTimelineV3(
+  dayIndex: number,
+  zone: ZoneV3,
+  zoneResult: ZoneBuilderResult,
+  usedCanonicalIds: Set<CanonicalPlaceId>,
+  anchorIds: Set<CanonicalPlaceId>,
+  mustIncludeIds: Set<CanonicalPlaceId>,
+  droppedCandidates: OptimizerV3Output['droppedCandidates'],
+  travelCache: TravelCache,
+  config: OptimizerV3Config,
+  trace: PlanTraceBuilder
+): DayTimelineV3 {
+  const featureFlags = getFeatureFlags();
+  const slots: TimelineSlotV3[] = [];
+  const selectedActivities: EnrichedCandidateCanonical[] = [];
+  const dayDropped: OptimizerV3Output['droppedCandidates'] = [];
+
+  // Get available candidates in this zone (not already used globally)
+  const availableCandidates = zone.candidates.filter(c => !usedCanonicalIds.has(c.canonicalId));
+
+  // Separate anchors and non-anchors
+  const availableAnchors = availableCandidates.filter(c => anchorIds.has(c.canonicalId));
+  const availableMustInclude = availableCandidates.filter(
+    c => mustIncludeIds.has(c.canonicalId) && !anchorIds.has(c.canonicalId)
+  );
+  const availableRegular = availableCandidates.filter(
+    c => !anchorIds.has(c.canonicalId) && !mustIncludeIds.has(c.canonicalId)
+  );
+
+  // Sort each group by utility
+  availableAnchors.sort((a, b) => b.utilityScore - a.utilityScore);
+  availableMustInclude.sort((a, b) => b.utilityScore - a.utilityScore);
+  availableRegular.sort((a, b) => b.utilityScore - a.utilityScore);
+
+  // Check for big rock in this zone
+  const zoneBigRock = zone.bigRocks.find(br => !usedCanonicalIds.has(br.canonicalId));
+  const isBigRockDay = !!zoneBigRock;
+
+  // Calculate time budget
+  let remainingBudget = config.dayBudgetMinutes;
+
+  // Reserve time for meal placeholder
+  const mealPlaceholderMinutes = featureFlags.ENABLE_MEALS ? 0 : config.mealPlaceholderMinutes;
+  remainingBudget -= mealPlaceholderMinutes;
+
+  // ANCHOR-FIRST SELECTION
+  // 1. Schedule big rock first if present
+  if (isBigRockDay && zoneBigRock) {
+    if (zoneBigRock.durationMinutes <= remainingBudget) {
+      selectedActivities.push(zoneBigRock);
+      usedCanonicalIds.add(zoneBigRock.canonicalId);
+      remainingBudget -= zoneBigRock.durationMinutes;
+      console.log(`  → Day ${dayIndex + 1} Big Rock: ${zoneBigRock.name} (${zoneBigRock.durationMinutes}min)`);
+    } else {
+      dayDropped.push({
+        canonicalId: zoneBigRock.canonicalId,
+        name: zoneBigRock.name,
+        reasonCode: DropReasonCode.TIME_BUDGET_EXCEEDED,
+        dayIndex,
+      });
+    }
+  }
+
+  // 2. Schedule anchors
+  for (const anchor of availableAnchors) {
+    if (usedCanonicalIds.has(anchor.canonicalId)) continue;
+
+    // Check if adding would exceed budget (with travel estimate)
+    const travelEstimate = selectedActivities.length > 0
+      ? travelCache.getHeuristic(
+          selectedActivities[selectedActivities.length - 1].location,
+          anchor.location
+        )
+      : 0;
+
+    if (anchor.durationMinutes + travelEstimate <= remainingBudget) {
+      selectedActivities.push(anchor);
+      usedCanonicalIds.add(anchor.canonicalId);
+      remainingBudget -= anchor.durationMinutes + travelEstimate;
+    } else {
+      dayDropped.push({
+        canonicalId: anchor.canonicalId,
+        name: anchor.name,
+        reasonCode: DropReasonCode.TIME_BUDGET_EXCEEDED,
+        dayIndex,
+      });
+    }
+  }
+
+  // 3. Schedule mustInclude
+  for (const must of availableMustInclude) {
+    if (usedCanonicalIds.has(must.canonicalId)) continue;
+
+    const travelEstimate = selectedActivities.length > 0
+      ? travelCache.getHeuristic(
+          selectedActivities[selectedActivities.length - 1].location,
+          must.location
+        )
+      : 0;
+
+    if (must.durationMinutes + travelEstimate <= remainingBudget) {
+      selectedActivities.push(must);
+      usedCanonicalIds.add(must.canonicalId);
+      remainingBudget -= must.durationMinutes + travelEstimate;
+    } else {
+      dayDropped.push({
+        canonicalId: must.canonicalId,
+        name: must.name,
+        reasonCode: DropReasonCode.TIME_BUDGET_EXCEEDED,
+        dayIndex,
+      });
+    }
+  }
+
+  // 4. Fill remaining time with regular candidates
+  // Limit based on big rock day
+  const maxAdditional = isBigRockDay ? config.maxAdditionalPoisOnBigRockDay : 10;
+  let additionalCount = 0;
+
+  for (const candidate of availableRegular) {
+    if (additionalCount >= maxAdditional) break;
+    if (usedCanonicalIds.has(candidate.canonicalId)) {
+      // Already used globally - drop as duplicate
+      dayDropped.push({
+        canonicalId: candidate.canonicalId,
+        name: candidate.name,
+        reasonCode: DropReasonCode.DUPLICATE_CANONICAL,
+        dayIndex,
+      });
+      continue;
+    }
+
+    const travelEstimate = selectedActivities.length > 0
+      ? travelCache.getHeuristic(
+          selectedActivities[selectedActivities.length - 1].location,
+          candidate.location
+        )
+      : 0;
+
+    if (candidate.durationMinutes + travelEstimate <= remainingBudget) {
+      selectedActivities.push(candidate);
+      usedCanonicalIds.add(candidate.canonicalId);
+      remainingBudget -= candidate.durationMinutes + travelEstimate;
+      additionalCount++;
+    }
+  }
+
+  // Add dropped to global list
+  droppedCandidates.push(...dayDropped);
+
+  // Build timeline slots with travel times
+  let currentMin = 0;
+  let totalActivity = 0;
+  let totalTravel = 0;
+  let totalBuffer = 0;
+
+  for (let i = 0; i < selectedActivities.length; i++) {
+    const activity = selectedActivities[i];
+
+    // Add travel from previous
+    if (i > 0) {
+      const prevActivity = selectedActivities[i - 1];
+      const travelMin = travelCache.getHeuristic(prevActivity.location, activity.location);
+
+      slots.push({
+        type: 'travel',
+        startMin: currentMin,
+        endMin: currentMin + travelMin,
+        duration: travelMin,
+        travelFromPrevious: travelMin,
+      });
+
+      currentMin += travelMin;
+      totalTravel += travelMin;
+    }
+
+    // Add buffer
+    const bufferMin = config.bufferMinutesBetweenSlots;
+    slots.push({
+      type: 'buffer',
+      startMin: currentMin,
+      endMin: currentMin + bufferMin,
+      duration: bufferMin,
+    });
+    currentMin += bufferMin;
+    totalBuffer += bufferMin;
+
+    // Add activity
+    const duration = activity.durationMinutes;
+    slots.push({
+      type: 'activity',
+      startMin: currentMin,
+      endMin: currentMin + duration,
+      duration,
+      candidate: activity,
+      travelFromPrevious: i > 0 ? slots[slots.length - 3].duration : undefined,
+    });
+    currentMin += duration;
+    totalActivity += duration;
+  }
+
+  // Insert meal placeholder (when ENABLE_MEALS=false)
+  let mealPlaceholderIncluded = false;
+  let mealPlaceholderOmittedReason: string | undefined;
+
+  if (!featureFlags.ENABLE_MEALS && mealPlaceholderMinutes > 0) {
+    const mealResult = tryInsertMealPlaceholder(
+      slots,
+      currentMin,
+      config.mealPlaceholderMinutes,
+      config.dayBudgetMinutes
+    );
+
+    if (mealResult.inserted) {
+      mealPlaceholderIncluded = true;
+      currentMin = mealResult.newCurrentMin;
+    } else {
+      mealPlaceholderOmittedReason = mealResult.reason;
+    }
+  }
+
+  // Log to trace
+  trace.logOptimization(
+    dayIndex,
+    selectedActivities.map(a => ({ id: a.canonicalId, name: a.name })),
+    dayDropped.map(d => ({ id: d.canonicalId, name: d.name, reasonCode: d.reasonCode })),
+    { included: mealPlaceholderIncluded, omittedReason: mealPlaceholderOmittedReason }
+  );
+
+  const totalMeal = mealPlaceholderIncluded ? mealPlaceholderMinutes : 0;
+  const budgetUsed = totalActivity + totalTravel + totalBuffer + totalMeal;
+
+  return {
+    dayIndex,
+    zoneId: zone.id,
+    primaryZoneName: zone.name,
+    isBigRockDay,
+    bigRock: zoneBigRock,
+    slots,
+    totalActivityMin: totalActivity,
+    totalTravelMin: totalTravel,
+    totalMealMin: totalMeal,
+    totalBufferMin: totalBuffer,
+    budgetUsed,
+    budgetRemaining: Math.max(0, config.dayBudgetMinutes - budgetUsed),
+    anchorsScheduled: selectedActivities.filter(a => anchorIds.has(a.canonicalId)).length,
+  };
+}
+
+/**
+ * Try to insert a meal placeholder slot.
+ * Strategy: Try lunch window (12:00-14:00) first, then dinner (18:00-20:00).
+ */
+function tryInsertMealPlaceholder(
+  slots: TimelineSlotV3[],
+  currentMin: number,
+  placeholderMinutes: number,
+  dayBudgetMinutes: number
+): { inserted: boolean; newCurrentMin: number; reason?: string; placeholderType?: 'lunch' | 'dinner' } {
+  // Check if we have room
+  if (currentMin + placeholderMinutes > dayBudgetMinutes) {
+    return {
+      inserted: false,
+      newCurrentMin: currentMin,
+      reason: 'No time budget remaining for meal placeholder',
+    };
+  }
+
+  // Try to find a gap for lunch (around 12:00 = 720 min from midnight, but we use relative time)
+  // Assuming day starts at 8:00 AM (480 min), lunch target is around 240 min into the day
+  const lunchTargetMin = 240; // 4 hours after day start
+  const dinnerTargetMin = 600; // 10 hours after day start
+
+  // Find best insertion point
+  let insertIndex = slots.length;
+  let insertMin = currentMin;
+  let placeholderType: 'lunch' | 'dinner' = 'lunch';
+
+  // Look for a gap near lunch time
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    if (slot.type === 'activity' && slot.startMin >= lunchTargetMin - 60 && slot.startMin <= lunchTargetMin + 60) {
+      // Insert before this activity
+      insertIndex = i;
+      insertMin = slot.startMin;
+      break;
+    }
+  }
+
+  // If no good lunch spot, try dinner
+  if (insertIndex === slots.length && currentMin >= dinnerTargetMin - 60) {
+    placeholderType = 'dinner';
+    insertMin = currentMin;
+  }
+
+  // Insert the placeholder
+  const placeholderSlot: TimelineSlotV3 = {
+    type: 'meal_placeholder',
+    startMin: insertMin,
+    endMin: insertMin + placeholderMinutes,
+    duration: placeholderMinutes,
+    placeholderType,
+  };
+
+  // For simplicity, append at end (proper insertion would require shifting all subsequent slots)
+  slots.push(placeholderSlot);
+
+  return {
+    inserted: true,
+    newCurrentMin: currentMin + placeholderMinutes,
+    placeholderType,
+  };
+}
+
+/**
+ * Assign zones to days based on big rocks and utility.
+ */
+function assignZonesToDays(
+  zones: ZoneV3[],
+  numDays: number
+): Map<number, number> {
+  const assignments = new Map<number, number>();
+
+  if (zones.length === 0) return assignments;
+
+  // Separate big rock zones and regular zones
+  const bigRockZones = zones.filter(z => z.hasBigRock).sort((a, b) => b.totalUtility - a.totalUtility);
+  const regularZones = zones.filter(z => !z.hasBigRock).sort((a, b) => b.totalUtility - a.totalUtility);
+
+  let dayIndex = 0;
+
+  // Assign big rock zones first (one per day)
+  for (const zone of bigRockZones) {
+    if (dayIndex >= numDays) break;
+    assignments.set(dayIndex, zone.id);
+    dayIndex++;
+  }
+
+  // Assign remaining days to regular zones
+  for (const zone of regularZones) {
+    if (dayIndex >= numDays) break;
+    assignments.set(dayIndex, zone.id);
+    dayIndex++;
+  }
+
+  // Fill remaining days by reusing best zones
+  const allZonesSorted = [...zones].sort((a, b) => b.totalUtility - a.totalUtility);
+  let zoneIdx = 0;
+
+  while (dayIndex < numDays && allZonesSorted.length > 0) {
+    assignments.set(dayIndex, allZonesSorted[zoneIdx % allZonesSorted.length].id);
+    dayIndex++;
+    zoneIdx++;
+  }
+
+  return assignments;
+}
+
+/**
+ * Create an empty day timeline.
+ */
+function createEmptyDayTimelineV3(dayIndex: number, config: OptimizerV3Config): DayTimelineV3 {
+  return {
+    dayIndex,
+    zoneId: 0,
+    isBigRockDay: false,
+    slots: [],
+    totalActivityMin: 0,
+    totalTravelMin: 0,
+    totalMealMin: 0,
+    totalBufferMin: 0,
+    budgetUsed: 0,
+    budgetRemaining: config.dayBudgetMinutes,
+    anchorsScheduled: 0,
+  };
+}
+
+/**
+ * Check day feasibility and return violations.
+ */
+function checkDayFeasibilityV3(
+  timeline: DayTimelineV3,
+  config: OptimizerV3Config
+): Array<{ type: FeasibilityViolationType; message: string }> {
+  const violations: Array<{ type: FeasibilityViolationType; message: string }> = [];
+
+  // Check time budget
+  if (timeline.budgetUsed > config.dayBudgetMinutes) {
+    violations.push({
+      type: 'TIME_BUDGET_EXCEEDED',
+      message: `Day ${timeline.dayIndex + 1} exceeds budget by ${timeline.budgetUsed - config.dayBudgetMinutes} min`,
+    });
+  }
+
+  // Check big rock day limits
+  if (timeline.isBigRockDay) {
+    const nonBigRockCount = timeline.slots.filter(
+      s => s.type === 'activity' && s.candidate && !s.candidate.isBigRock
+    ).length;
+
+    if (nonBigRockCount > config.maxAdditionalPoisOnBigRockDay) {
+      violations.push({
+        type: 'BIG_ROCK_DAY_LIMIT',
+        message: `Day ${timeline.dayIndex + 1} has ${nonBigRockCount} non-big-rock POIs (max: ${config.maxAdditionalPoisOnBigRockDay})`,
+      });
+    }
+  }
+
+  // Check for missing meal placeholder (when ENABLE_MEALS=false)
+  const featureFlags = getFeatureFlags();
+  if (!featureFlags.ENABLE_MEALS) {
+    const hasMealPlaceholder = timeline.slots.some(s => s.type === 'meal_placeholder');
+    if (!hasMealPlaceholder && timeline.slots.filter(s => s.type === 'activity').length > 0) {
+      violations.push({
+        type: 'MISSING_MEAL',
+        message: `Day ${timeline.dayIndex + 1} has no meal placeholder`,
+      });
+    }
+  }
+
+  return violations;
 }

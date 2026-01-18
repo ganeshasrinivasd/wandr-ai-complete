@@ -4,21 +4,25 @@ AI-powered travel planning that satisfies every constraint. Wheelchair accessibl
 
 ## Overview
 
-Wandr uses a multi-agent AI system to create personalized travel itineraries. Tell us your destination, dates, budget, and constraints - our 4 specialized AI agents work together to build the perfect trip.
+Wandr uses a multi-agent AI system to create personalized travel itineraries. Provide your destination, dates, budget, and constraints - four specialized AI agents work together to build the perfect trip.
 
-### How It Works
+## How It Works
 
-1. **Parser Agent** - Validates and structures your input (OpenAI GPT-4o-mini)
-2. **Researcher Agent** - Finds venues via Google Maps API
-3. **Optimizer Agent** - Builds constraint-satisfying itineraries (Claude)
-4. **Storyteller Agent** - Writes engaging narratives (Claude)
+The system processes travel requests through a pipeline of specialized agents:
 
-## Features
+1. **Parser Agent** - Validates input, detects conflicts, and applies sensible defaults
+2. **Researcher Agent** - Discovers venues via Google Maps with iconic scoring
+3. **Optimizer Agent** - Builds constraint-satisfying itineraries using anchor-first scheduling
+4. **Storyteller Agent** - Generates engaging day-by-day narratives
 
-- 100% constraint satisfaction (accessibility, dietary, budget)
-- Route optimization by neighborhood clustering
-- Real-time generation progress
-- Day-by-day interactive itinerary view
+### Key Capabilities
+
+- Full constraint satisfaction (accessibility, dietary, budget)
+- Anchor-first scheduling prioritizes must-see attractions
+- Geographic zone clustering minimizes travel time
+- Duplicate detection via canonical place registry
+- Real-time generation progress streaming
+- Interactive day-by-day itinerary view with maps
 
 ## Quick Start
 
@@ -26,7 +30,7 @@ Wandr uses a multi-agent AI system to create personalized travel itineraries. Te
 
 - Node.js 18+
 - npm or yarn
-- API keys (see below)
+- API keys (see Environment Setup)
 
 ### Installation
 
@@ -41,19 +45,22 @@ npm install
 Create `.env.local` in the project root:
 
 ```bash
-# Anthropic (Agent 4 - Storyteller)
+# Anthropic (Optimizer and Storyteller agents)
 ANTHROPIC_API_KEY=sk-ant-...
 
-# OpenAI (Agent 1 - Parser)
+# OpenAI (Parser agent)
 OPENAI_API_KEY=sk-proj-...
 
-# Google Maps (Agent 2 - Researcher)
+# Google Maps (Researcher agent)
 GOOGLE_MAPS_API_KEY=AIza...
 
 # Supabase (Database)
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
 SUPABASE_SERVICE_ROLE_KEY=eyJ...
+
+# Mapbox (Optional - for route visualization)
+NEXT_PUBLIC_MAPBOX_TOKEN=pk.eyJ...
 ```
 
 ### Google Maps API Setup
@@ -77,40 +84,48 @@ npm run dev
 
 Open http://localhost:3000
 
+## Architecture
+
+### Agent Pipeline
+
+```
+User Input -> Parser -> Researcher -> Optimizer -> Storyteller -> Itinerary
+```
+
+**Parser**: Extracts structured data from natural language input. Identifies hard blockers (impossible constraints) and soft conflicts (resolvable with defaults). Outputs validated trip parameters.
+
+**Researcher**: Queries Google Maps for attractions, restaurants, and points of interest. Computes iconic scores based on review count, rating, and category. Identifies anchor attractions (high-value must-see venues).
+
+**Optimizer**: Builds daily schedules using anchor-first selection. Groups venues into geographic zones to minimize travel. Validates feasibility and repairs constraint violations. Ensures no duplicate venues across days.
+
+**Storyteller**: Transforms optimized schedules into readable narratives with descriptions, tips, and context for each activity.
+
+### Core Components
+
+| Component | Purpose |
+|-----------|---------|
+| Canonical Registry | Deduplicates venues across sources using normalized names and geohash |
+| Zone Builder | Clusters venues geographically using K-means with DBSCAN fallback |
+| Travel Cache | Two-tier travel time estimation (heuristic + real API validation) |
+| Repair Engine | Fixes constraint violations with priority-ordered repair actions |
+| Feasibility Checker | Validates time budgets, travel feasibility, and constraint satisfaction |
+
 ## Project Structure
 
 ```
 wandr-ai-complete/
-├── app/
-│   ├── api/
-│   │   └── plan/
-│   │       ├── [id]/route.ts      # GET plan by ID
-│   │       └── generate/route.ts   # POST generate plan
-│   ├── plan/
-│   │   ├── [id]/page.tsx          # Results view
-│   │   └── generating/page.tsx     # Generation progress
-│   ├── planner/page.tsx           # Input form
-│   └── page.tsx                   # Landing page
+├── app/                    # Next.js pages and API routes
+│   ├── api/plan/          # Plan generation and retrieval endpoints
+│   ├── plan/              # Itinerary display pages
+│   └── planner/           # Trip input form
 ├── lib/
-│   ├── agents/
-│   │   ├── agent1-parser.ts
-│   │   ├── agent2-researcher.ts
-│   │   ├── agent3-optimizer.ts
-│   │   ├── agent4-storyteller.ts
-│   │   └── orchestrator.ts
-│   ├── mcp/
-│   │   ├── google-maps-client.ts
-│   │   └── reddit-client.ts
-│   ├── supabase/
-│   │   ├── client.ts
-│   │   └── server.ts
-│   └── utils/
-│       └── types.ts
-├── mcp-servers/
-│   ├── google-maps/
-│   └── reddit/
-└── supabase/
-    └── migrations/
+│   ├── agents/            # AI agent implementations
+│   ├── planning/          # Zone building, routing, scheduling
+│   ├── validation/        # Feasibility checks and repairs
+│   ├── config/            # Feature flags and optimizer config
+│   └── observability/     # PlanTrace logging
+├── components/            # React components
+└── supabase/migrations/   # Database schema
 ```
 
 ## Tech Stack
@@ -123,6 +138,7 @@ wandr-ai-complete/
 - OpenAI API
 - Anthropic API
 - Google Maps API
+- Mapbox GL
 
 ## Available Scripts
 
@@ -131,6 +147,7 @@ npm run dev      # Start development server
 npm run build    # Build for production
 npm run start    # Start production server
 npm run lint     # Run ESLint
+npm test         # Run test suite
 ```
 
 ## Deployment
@@ -149,11 +166,24 @@ npm run build
 npm run start
 ```
 
+## Configuration
+
+Feature flags in `lib/config/feature-flags.ts`:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| ENABLE_MEALS | false | Include restaurant recommendations |
+| ENABLE_REAL_TRAVEL_VALIDATION | true | Validate travel times via API |
+| ENABLE_DBSCAN_FALLBACK | true | Use DBSCAN when K-means fails validation |
+
+Optimizer parameters in `lib/config/optimizer-config.ts` control anchor selection thresholds, zone diameter limits, and scheduling constraints.
+
 ## Known Limitations
 
-- Reddit integration is currently disabled (simplified researcher)
+- Reddit integration currently disabled
 - Opening hours validation not yet implemented
 - Limited to Google Maps coverage areas
+- Meal scheduling is feature-flagged off by default
 
 ## License
 
@@ -165,4 +195,4 @@ Pull requests welcome. For major changes, open an issue first.
 
 ## Support
 
-- GitHub Issues: https://github.com/ganeshasrinivasd/wandr-ai-complete/issues
+GitHub Issues: https://github.com/ganeshasrinivasd/wandr-ai-complete/issues
