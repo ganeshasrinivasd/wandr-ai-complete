@@ -76,9 +76,17 @@ Return ONLY the JSON object, no markdown formatting.`;
       response_format: { type: 'json_object' },
     });
 
-    const result = JSON.parse(
-      completion.choices[0].message.content || '{}'
-    ) as ParsedInput;
+    // Validate response structure
+    if (!completion.choices || completion.choices.length === 0) {
+      throw new Error('Empty response from OpenAI - no choices returned');
+    }
+
+    const content = completion.choices[0].message?.content;
+    if (!content) {
+      throw new Error('No content in OpenAI response');
+    }
+
+    const result = JSON.parse(content) as ParsedInput;
 
     console.log('✓ Agent 1: Validation complete');
     console.log(

@@ -3,15 +3,16 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
-import { 
-  Calendar, 
-  DollarSign, 
-  Users, 
+import {
+  Calendar,
+  DollarSign,
+  Users,
   ArrowLeft,
   Compass,
   Sparkles,
   ChevronRight
 } from 'lucide-react';
+import LocationAutocomplete from '@/components/LocationAutocomplete';
 
 export default function PlannerPage() {
   const router = useRouter();
@@ -174,15 +175,13 @@ export default function PlannerPage() {
                     <label className="block text-sm text-white/60 mb-3 tracking-wider">
                       DESTINATION
                     </label>
-                    <input
-                      type="text"
-                      required
+                    <LocationAutocomplete
                       value={formData.destination}
-                      onChange={(e) =>
-                        setFormData({ ...formData, destination: e.target.value })
+                      onChange={(value) =>
+                        setFormData({ ...formData, destination: value })
                       }
                       placeholder="Tokyo, Japan"
-                      className="w-full px-6 py-4 bg-white/5 border border-white/10 rounded-2xl text-white text-lg placeholder:text-white/30 focus:outline-none focus:border-purple-500/50 focus:bg-white/10 transition-all"
+                      required
                     />
                   </div>
 

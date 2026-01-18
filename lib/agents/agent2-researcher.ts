@@ -1,6 +1,24 @@
-import { ParsedInput, Candidate } from '../utils/types';
-import { googleMapsMCP } from '../mcp/google-maps-client';
+/**
+ * Agent 2: Researcher
+ *
+ * Uses the cost-effective iconic retrieval pipeline to find places.
+ * Features:
+ * - Category-balanced text search for high iconic recall
+ * - Multi-center nearby search for coverage
+ * - Adaptive LLM fallback (only when recall is weak)
+ * - Destination-level caching (near-zero cost for repeat queries)
+ * - Budget management with graceful degradation
+ */
 
+import { ParsedInput, Candidate } from '../utils/types';
+import {
+  retrieveCandidates,
+  toOptimizerFormat,
+  RetrievalConfig,
+  RetrievalResult,
+} from '../retrieval/cost-effective-retrieval';
+
+// Legacy interface for backward compatibility
 interface ResearchResult {
   candidates: {
     attractions: Candidate[];
@@ -13,9 +31,206 @@ interface ResearchResult {
     constraint_failures: number;
     top_neighborhoods: string[];
   };
+  // NEW: Added for optimizer improvements
+  iconicCandidates?: Candidate[];
+  queryConsensus?: Map<string, number>;
+  retrievalMetadata?: {
+    cacheHit: boolean;
+    llmFallbackUsed: boolean;
+    recallHealthScore: number;
+    estimatedCost: number;
+  };
 }
 
-// Expanded place types for variety
+/**
+ * Main researcher function - now uses cost-effective retrieval pipeline
+ */
+export async function runAgent2Researcher(
+  parsedInput: ParsedInput,
+  onProgress?: (message: string) => void
+): Promise<ResearchResult> {
+  console.log('🤖 Agent 2 (Researcher): Starting cost-effective retrieval...');
+
+  const destination = parsedInput.parsed_data.destination;
+  const interests = parsedInput.parsed_data.interests;
+  const days = parsedInput.parsed_data.dates.duration_days;
+  const pace = parsedInput.parsed_data.constraints.pace || 'moderate';
+
+  // Build retrieval config
+  const config: RetrievalConfig = {
+    destination: destination.city,
+    country: destination.country,
+    language: 'en',
+    interests: interests,
+    tripDuration: days,
+    pace: pace,
+  };
+
+  try {
+    // Run the new retrieval pipeline
+    const result = await retrieveCandidates(
+      config,
+      process.env.GOOGLE_MAPS_API_KEY || '',
+      process.env.OPENAI_API_KEY || '',
+      onProgress
+    );
+
+    // Convert to optimizer format
+    const optimizerData = toOptimizerFormat(result);
+
+    // Convert to legacy Candidate format for backward compatibility
+    const candidates = convertToLegacyFormat(optimizerData);
+
+    // Extract neighborhoods
+    const neighborhoods = extractNeighborhoods(result.candidates);
+
+    // Log results
+    console.log('✓ Agent 2: Research complete');
+    console.log(`  → ${candidates.attractions.length} attractions`);
+    console.log(`  → ${candidates.restaurants.length} restaurants`);
+    console.log(`  → ${candidates.cafes.length} cafes`);
+    console.log(`  → ${result.anchors.length} anchor candidates identified`);
+    console.log(`  → Cache hit: ${result.metadata.cacheHit}`);
+    console.log(`  → LLM fallback: ${result.metadata.llmFallbackUsed}`);
+    console.log(`  → Cost: $${result.metadata.estimatedCost.toFixed(3)}`);
+
+    return {
+      candidates,
+      research_summary: {
+        total_candidates: result.metadata.totalCandidatesDeduped,
+        reddit_threads_analyzed: 0, // Reddit integration can be added later
+        constraint_failures: 0,
+        top_neighborhoods: neighborhoods,
+      },
+      // NEW: Pass through for optimizer improvements
+      iconicCandidates: convertAnchorsToLegacy(result.anchors),
+      queryConsensus: optimizerData.queryConsensus,
+      retrievalMetadata: {
+        cacheHit: result.metadata.cacheHit,
+        llmFallbackUsed: result.metadata.llmFallbackUsed,
+        recallHealthScore: result.metadata.recallHealthScore,
+        estimatedCost: result.metadata.estimatedCost,
+      },
+    };
+
+  } catch (error) {
+    console.error('Retrieval pipeline error, falling back to legacy:', error);
+    onProgress?.('⚠️ Using fallback retrieval...');
+
+    // Fallback to legacy retrieval if new pipeline fails
+    return await legacyRetrieval(parsedInput, onProgress);
+  }
+}
+
+/**
+ * Convert new retrieval format to legacy Candidate format
+ */
+function convertToLegacyFormat(
+  optimizerData: ReturnType<typeof toOptimizerFormat>
+): ResearchResult['candidates'] {
+  const convertCandidate = (c: any): Candidate => ({
+    id: c.id,
+    name: c.name,
+    type: c.type as Candidate['type'],
+    location: {
+      lat: c.location.lat,
+      lng: c.location.lng,
+      neighborhood: c.location.neighborhood || '',
+    },
+    photo_url: c.photo_url,
+    reddit_data: {
+      mentions: 0,
+      sentiment: 0.7,
+      sample_quotes: [],
+      sources: [],
+    },
+    google_data: {
+      rating: c.google_data?.rating || 4.0,
+      reviews_count: c.google_data?.reviews_count || 100,
+      price_level: c.google_data?.price_level || 2,
+      opening_hours: undefined,
+    },
+    constraints_satisfied: {
+      wheelchair_accessible: c.constraints_satisfied?.wheelchair_accessible ?? true,
+      vegan_friendly: c.constraints_satisfied?.vegan_friendly ?? true,
+      cost: c.constraints_satisfied?.cost || 30,
+    },
+    relevance_score: c.relevance_score || 0.5,
+    why_relevant: c._isAnchorCandidate
+      ? `Iconic attraction with ${c.google_data?.reviews_count || 'many'} reviews`
+      : `Popular ${c.type} with ${c.google_data?.reviews_count || 'many'} reviews`,
+  });
+
+  return {
+    attractions: optimizerData.candidates.attractions.map(convertCandidate),
+    restaurants: optimizerData.candidates.restaurants.map(convertCandidate),
+    cafes: optimizerData.candidates.cafes.map(convertCandidate),
+  };
+}
+
+/**
+ * Convert anchor candidates to legacy format
+ */
+function convertAnchorsToLegacy(anchors: RetrievalResult['anchors']): Candidate[] {
+  return anchors.map(a => ({
+    id: a.placeId,
+    name: a.name,
+    type: 'attraction' as const,
+    location: {
+      lat: a.location.lat,
+      lng: a.location.lng,
+      neighborhood: a.vicinity || '',
+    },
+    photo_url: a.photoReference
+      ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference=${a.photoReference}&key=${process.env.GOOGLE_MAPS_API_KEY}`
+      : undefined,
+    reddit_data: {
+      mentions: 0,
+      sentiment: 0.7,
+      sample_quotes: [],
+      sources: [],
+    },
+    google_data: {
+      rating: a.rating,
+      reviews_count: a.reviewCount,
+      price_level: a.priceLevel || 2,
+      opening_hours: undefined,
+    },
+    constraints_satisfied: {
+      wheelchair_accessible: true,
+      vegan_friendly: false,
+      cost: (a.priceLevel || 2) * 15,
+    },
+    relevance_score: a.iconicScore,
+    why_relevant: `Iconic: ${a.name} (${a.reviewCount} reviews, ${a.rating}★)`,
+  }));
+}
+
+/**
+ * Extract unique neighborhoods from candidates
+ */
+function extractNeighborhoods(candidates: RetrievalResult['candidates']): string[] {
+  const neighborhoods = new Set<string>();
+
+  for (const c of candidates) {
+    if (c.vicinity) {
+      // Extract first part of address as neighborhood
+      const parts = c.vicinity.split(',');
+      if (parts.length > 0) {
+        neighborhoods.add(parts[0].trim());
+      }
+    }
+  }
+
+  return Array.from(neighborhoods).slice(0, 5);
+}
+
+// =============================================================================
+// LEGACY FALLBACK (in case new pipeline fails)
+// =============================================================================
+
+import { googleMapsMCP } from '../mcp/google-maps-client';
+
 const ATTRACTION_TYPES = [
   'tourist_attraction',
   'museum',
@@ -35,18 +250,11 @@ const ATTRACTION_TYPES = [
   'spa',
 ];
 
-const FOOD_TYPES = [
-  'restaurant',
-  'cafe',
-  'bakery',
-  'bar',
-];
-
-export async function runAgent2Researcher(
+async function legacyRetrieval(
   parsedInput: ParsedInput,
   onProgress?: (message: string) => void
 ): Promise<ResearchResult> {
-  console.log('🤖 Agent 2 (Researcher): Starting research...');
+  console.log('🤖 Agent 2 (Researcher): Using legacy retrieval...');
 
   const destination = parsedInput.parsed_data.destination;
   const interests = parsedInput.parsed_data.interests;
@@ -63,34 +271,30 @@ export async function runAgent2Researcher(
   onProgress?.('→ Getting city coordinates...');
   const cityCoords = await getCityCoordinates(destination.city);
 
-  // Calculate how many candidates we need (at least 4 per day + buffer)
   const minAttractionsNeeded = days * 3 + 5;
   const minRestaurantsNeeded = days * 2 + 3;
 
-  // Search for attractions with variety
-  onProgress?.('→ Searching attractions and experiences...');
-  
+  onProgress?.('→ Searching attractions...');
+
   for (const type of ATTRACTION_TYPES) {
     if (candidates.attractions.length >= minAttractionsNeeded) break;
-    
+
     try {
-      // Build search query based on interests
-      const interestQuery = interests.length > 0 
+      const interestQuery = interests.length > 0
         ? `${interests[Math.floor(Math.random() * interests.length)]} ${type}`
         : `popular ${type}`;
-      
+
       const places = await googleMapsMCP.searchPlaces(
         interestQuery,
         cityCoords,
-        15000, // 15km radius for better coverage
+        15000,
         type
       );
 
       for (const place of places.slice(0, 5)) {
         if (!place.place_id || seenPlaceIds.has(place.place_id)) continue;
         seenPlaceIds.add(place.place_id);
-
-        candidates.attractions.push(createCandidate(place, 'attraction'));
+        candidates.attractions.push(createLegacyCandidate(place, 'attraction'));
       }
     } catch (error) {
       console.error(`Error searching ${type}:`, error);
@@ -98,10 +302,8 @@ export async function runAgent2Researcher(
   }
 
   onProgress?.(`✓ Found ${candidates.attractions.length} attractions`);
-
-  // Search for restaurants
   onProgress?.('→ Searching restaurants...');
-  
+
   try {
     const restaurants = await googleMapsMCP.searchPlaces(
       'best restaurants',
@@ -113,18 +315,15 @@ export async function runAgent2Researcher(
     for (const place of restaurants.slice(0, minRestaurantsNeeded)) {
       if (!place.place_id || seenPlaceIds.has(place.place_id)) continue;
       seenPlaceIds.add(place.place_id);
-
-      candidates.restaurants.push(createCandidate(place, 'restaurant'));
+      candidates.restaurants.push(createLegacyCandidate(place, 'restaurant'));
     }
   } catch (error) {
     console.error('Error searching restaurants:', error);
   }
 
   onProgress?.(`✓ Found ${candidates.restaurants.length} restaurants`);
-
-  // Search for cafes
   onProgress?.('→ Searching cafes...');
-  
+
   try {
     const cafes = await googleMapsMCP.searchPlaces(
       'popular cafes',
@@ -136,8 +335,7 @@ export async function runAgent2Researcher(
     for (const place of cafes.slice(0, 10)) {
       if (!place.place_id || seenPlaceIds.has(place.place_id)) continue;
       seenPlaceIds.add(place.place_id);
-
-      candidates.cafes.push(createCandidate(place, 'cafe'));
+      candidates.cafes.push(createLegacyCandidate(place, 'cafe'));
     }
   } catch (error) {
     console.error('Error searching cafes:', error);
@@ -145,18 +343,12 @@ export async function runAgent2Researcher(
 
   onProgress?.(`✓ Found ${candidates.cafes.length} cafes`);
 
-  // Extract unique neighborhoods
   const neighborhoods = new Set<string>();
   [...candidates.attractions, ...candidates.restaurants, ...candidates.cafes].forEach(c => {
     if (c.location.neighborhood) {
       neighborhoods.add(c.location.neighborhood.split(',')[0].trim());
     }
   });
-
-  console.log('✓ Agent 2: Research complete');
-  console.log(`  → ${candidates.attractions.length} attractions`);
-  console.log(`  → ${candidates.restaurants.length} restaurants`);
-  console.log(`  → ${candidates.cafes.length} cafes`);
 
   return {
     candidates,
@@ -169,8 +361,7 @@ export async function runAgent2Researcher(
   };
 }
 
-function createCandidate(place: any, type: 'attraction' | 'restaurant' | 'cafe'): Candidate {
-  // Build photo URL if photo_reference exists
+function createLegacyCandidate(place: any, type: 'attraction' | 'restaurant' | 'cafe'): Candidate {
   const photoUrl = place.photo_reference
     ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference=${place.photo_reference}&key=${process.env.GOOGLE_MAPS_API_KEY}`
     : undefined;
@@ -213,7 +404,7 @@ async function getCityCoordinates(city: string): Promise<{ lat: number; lng: num
       `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(city)}&key=${process.env.GOOGLE_MAPS_API_KEY}`
     );
     const data = await response.json();
-    
+
     if (data.results && data.results[0]) {
       return {
         lat: data.results[0].geometry.location.lat,
@@ -223,8 +414,7 @@ async function getCityCoordinates(city: string): Promise<{ lat: number; lng: num
   } catch (error) {
     console.error('Geocoding error:', error);
   }
-  
-  // Fallback coords for common cities
+
   const coords: Record<string, { lat: number; lng: number }> = {
     'Tokyo': { lat: 35.6762, lng: 139.6503 },
     'Hyderabad': { lat: 17.3850, lng: 78.4867 },

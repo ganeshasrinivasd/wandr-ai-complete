@@ -15,7 +15,7 @@ export async function* orchestratePlanGeneration(
     
     const parsedInput = await runAgent1Parser(planInput);
     
-    // Check if validation failed - but continue if it's just clarifications
+    // Check if validation failed
     if (!parsedInput.valid) {
       if (parsedInput.conflicts.length > 0) {
         yield {
@@ -24,6 +24,20 @@ export async function* orchestratePlanGeneration(
           message: `Validation issues: ${parsedInput.conflicts.join(', ')}`,
         };
         return; // Stop here if there are actual conflicts
+      }
+
+      // If valid=false but no conflicts, this is an unexpected state
+      // Log warning but continue with clarifications if available
+      console.warn('Parser returned valid=false but no conflicts. Proceeding with caution.');
+
+      // If no clarifications either, something is wrong - fail safely
+      if (parsedInput.clarifications_needed.length === 0) {
+        yield {
+          agent: 'parser',
+          status: 'error',
+          message: 'Validation failed with unclear reason. Please try rephrasing your request.',
+        };
+        return;
       }
     }
 

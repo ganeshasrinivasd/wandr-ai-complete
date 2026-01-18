@@ -451,6 +451,7 @@ export default function PlanResultsPage() {
                   </p>
                   <div className="h-[calc(100%-2rem)]">
                     <DayMap
+                      key={activeDay}
                       activities={currentDay?.activities || []}
                       activeActivityId={undefined}
                     />

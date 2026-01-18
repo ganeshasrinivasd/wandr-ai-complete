@@ -71,9 +71,19 @@ Always include practical info (cost, hours, accessibility).`;
       ],
     });
 
-    const formattedPlan = message.content[0].type === 'text' 
-      ? message.content[0].text 
-      : '';
+    // Validate response structure
+    if (!message.content || message.content.length === 0) {
+      console.warn('Empty response from Claude, using fallback');
+      return generateFallbackMarkdown(parsedInput, itinerary);
+    }
+
+    const firstBlock = message.content[0];
+    if (firstBlock.type !== 'text') {
+      console.warn(`Unexpected response type: ${firstBlock.type}, using fallback`);
+      return generateFallbackMarkdown(parsedInput, itinerary);
+    }
+
+    const formattedPlan = firstBlock.text;
 
     onProgress?.('✓ Itinerary written!');
 

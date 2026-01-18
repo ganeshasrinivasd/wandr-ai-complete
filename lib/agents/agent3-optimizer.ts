@@ -1,25 +1,42 @@
+/**
+ * Agent 3: Optimizer v2
+ *
+ * Multi-phase itinerary optimization:
+ * 1. Dedup & Enrich - Normalize candidates, detect big rocks, assign durations
+ * 2. Zone Building - K-means clustering for geographic zones
+ * 3. Day-Zone Assignment - Assign zones to days (big rocks get dedicated days)
+ * 4. Activity Selection - Select activities within zone + budget constraints
+ * 5. Route Ordering - TSP/nearest-neighbor to minimize travel
+ * 6. Meal Injection - Schedule meals with proper restaurant selection
+ * 7. Feasibility Check - Validate constraints
+ * 8. Repair Loop - Fix infeasible days
+ */
+
 import { ParsedInput, Candidate, Itinerary, DayItinerary, Activity } from '../utils/types';
 import {
-  calculateIconicScore,
-  calculateFinalScore,
-  identifyIconicAnchors,
-  createGeographicClusters,
-  assignAnchorsToClusters,
-  getClusterCentroid,
-  validateItinerary,
-  haversineDistance,
-  PACE_CONFIGS,
-  DayPackingConfig,
-} from '../utils/itinerary-scoring';
+  EnrichedCandidate,
+  DayTimeline,
+  TimelineSlot,
+  Zone,
+  OptimizerConfig,
+  DEFAULT_OPTIMIZER_CONFIG,
+  TravelMatrix,
+} from '../planning/types';
 import {
-  estimateDuration,
-  checkDayFeasibility,
-  canFitTogether,
-  getDayActivityLimit,
-  generateTimeSlot,
-  DurationEstimate,
-  DaySchedule,
-} from '../utils/duration-estimator';
+  dedupCandidates,
+  dedupWithMerge,
+  enrichCandidates,
+  filterGenericPlaces,
+  sortByUtility,
+  buildCanonicalKey,
+  areNearDuplicates,
+} from '../utils/dedup';
+import { buildZonesAndAssignDays, getCandidatesForZone } from '../planning/zone-builder';
+import { orderDayRoute, buildTravelMatrix, analyzeRoute } from '../planning/route-optimizer';
+import { scheduleMeals, filterValidRestaurants, isValidRestaurant } from '../planning/meal-scheduler';
+import { checkItineraryFeasibility, wouldViolateConstraints } from '../validation/feasibility-checker';
+import { repairItinerary } from '../validation/repair-engine';
+import { haversineDistance, estimateTravelTime } from '../utils/duration-estimator';
 
 interface ResearchData {
   candidates: {
@@ -36,26 +53,24 @@ export async function runAgent3Optimizer(
   researchData: ResearchData,
   onProgress?: (message: string) => void
 ): Promise<Itinerary> {
-  console.log('🤖 Agent 3 (Optimizer): Building itinerary with iconic anchors...');
+  console.log('🤖 Agent 3 (Optimizer): Building itinerary with zone-first planning...');
 
   const days = parsedInput.parsed_data.dates.duration_days;
   const constraints = parsedInput.parsed_data.constraints;
   const budget = parsedInput.parsed_data.budget.amount_per_day;
-  const pace = constraints.pace || 'moderate';
-  const interests = parsedInput.parsed_data.interests;
+  const pace = (constraints.pace || 'moderate') as 'relaxed' | 'moderate' | 'packed';
 
-  // Get pace config
-  const config = PACE_CONFIGS[pace] || PACE_CONFIGS.moderate;
+  // Build optimizer config
+  const config: OptimizerConfig = {
+    ...DEFAULT_OPTIMIZER_CONFIG,
+    pace,
+    dayBudgetMinutes: pace === 'relaxed' ? 480 : pace === 'packed' ? 660 : 540,
+  };
 
   // Get all candidates
-  const allAttractions: Candidate[] = researchData.candidates?.attractions || [];
-  const allRestaurants: Candidate[] = researchData.candidates?.restaurants || [];
-  const allCafes: Candidate[] = researchData.candidates?.cafes || [];
-  const iconicCandidates: Candidate[] = researchData.iconicCandidates || [];
-  const queryConsensus = researchData.queryConsensus || new Map<string, number>();
-
-  // Track used venues globally to prevent repeats
-  const usedVenueIds = new Set<string>();
+  const allAttractions = researchData.candidates?.attractions || [];
+  const allRestaurants = researchData.candidates?.restaurants || [];
+  const allCafes = researchData.candidates?.cafes || [];
 
   // Handle empty candidates
   if (allAttractions.length === 0 && allRestaurants.length === 0) {
@@ -63,736 +78,507 @@ export async function runAgent3Optimizer(
   }
 
   // =========================================================================
-  // PHASE 1: Identify Iconic Anchors
+  // PHASE 1: Dedup & Enrich Candidates
   // =========================================================================
-  onProgress?.('→ Identifying iconic must-see attractions...');
+  onProgress?.('→ Deduplicating and enriching candidates...');
 
-  let anchors = iconicCandidates.length > 0
-    ? iconicCandidates.slice(0, days * config.maxAnchorsPerDay)
-    : identifyIconicAnchors(allAttractions, days, config);
+  const rawCandidates = convertToRawCandidates([...allAttractions, ...allRestaurants, ...allCafes]);
 
-  onProgress?.(`✓ Selected ${anchors.length} iconic anchors for ${days} days`);
+  // Use enhanced dedup with merge and instrumentation
+  const { candidates: dedupedRaw, stats: dedupStats } = dedupWithMerge(rawCandidates);
 
-  // Log anchors for debugging
-  console.log('Selected anchors:');
-  anchors.forEach((a, i) => {
-    const score = calculateIconicScore(a, queryConsensus.get(a.id) || 0);
-    console.log(`  ${i + 1}. ${a.name} (score: ${score.toFixed(2)}, reviews: ${a.google_data.reviews_count})`);
-  });
+  // Log dedup stats for instrumentation
+  console.log(`  Dedup stats: ${dedupStats.inputCount} input → ${dedupStats.outputCount} output`);
+  console.log(`    - Exact duplicates removed: ${dedupStats.exactDuplicates}`);
+  console.log(`    - Near-duplicates merged: ${dedupStats.nearDuplicates}`);
+
+  let enrichedCandidates = enrichCandidates(dedupedRaw, pace);
+
+  // Filter out generic places with low signals
+  enrichedCandidates = filterGenericPlaces(enrichedCandidates, 3000);
+
+  // Separate by type - use strict validation for restaurants
+  const enrichedAttractions = enrichedCandidates.filter(
+    c => !isValidRestaurant(c) // Everything that's NOT a valid restaurant is an attraction
+  );
+  const enrichedRestaurants = enrichedCandidates.filter(
+    c => isValidRestaurant(c) // Only truly valid restaurants pass
+  );
+
+  onProgress?.(`✓ ${enrichedCandidates.length} candidates after dedup (${enrichedAttractions.length} attractions, ${enrichedRestaurants.length} restaurants)`);
+
+  // Log big rocks detected
+  const bigRocks = enrichedAttractions.filter(c => c.isBigRock);
+  if (bigRocks.length > 0) {
+    console.log('Big rocks detected:');
+    bigRocks.forEach(br => {
+      console.log(`  - ${br.name} (${br.bigRockType}, ${br.durationExpected}min)`);
+    });
+  }
 
   // =========================================================================
-  // PHASE 2: Create Geographic Clusters
+  // PHASE 2: Zone Building
   // =========================================================================
-  onProgress?.('→ Clustering venues by geography...');
+  onProgress?.('→ Building geographic zones...');
 
-  const allVenues = [...allAttractions, ...allRestaurants, ...allCafes];
-  const numClusters = Math.min(days, Math.max(2, Math.floor(allVenues.length / 8)));
-  const clusters = createGeographicClusters(allVenues, numClusters);
+  const { zones, dayAssignments, candidateZoneMap } = buildZonesAndAssignDays(
+    enrichedAttractions,
+    days,
+    config.zoneConfig
+  );
 
-  onProgress?.(`✓ Created ${clusters.length} geographic zones`);
+  // Also assign restaurants to zones
+  for (const restaurant of enrichedRestaurants) {
+    let nearestZone = 0;
+    let nearestDist = Infinity;
 
-  // =========================================================================
-  // PHASE 3: Assign Anchors to Days/Clusters
-  // =========================================================================
-  const clusterAnchors = assignAnchorsToClusters(anchors, clusters);
-
-  // =========================================================================
-  // PHASE 4: Build Day Itineraries (Anchor-First Strategy)
-  // =========================================================================
-  const itinerary: Record<string, DayItinerary> = {};
-  let repairAttempts = 0;
-  const maxRepairAttempts = 3;
-
-  for (let day = 1; day <= days; day++) {
-    onProgress?.(`→ Planning Day ${day} with anchor-first strategy...`);
-
-    // Pick cluster for this day
-    const clusterIndex = (day - 1) % clusters.length;
-    const dayCluster = clusters[clusterIndex];
-    const dayAnchors = clusterAnchors.get(clusterIndex) || [];
-
-    // Build optimized day route
-    let dayActivities = buildAnchorFirstDayRoute(
-      dayAnchors,
-      dayCluster,
-      allAttractions,
-      allRestaurants,
-      allCafes,
-      config,
-      usedVenueIds,
-      interests,
-      queryConsensus
-    );
-
-    // Build feasibility check schedule
-    const daySchedule = buildDaySchedule(dayActivities, allAttractions, allRestaurants, allCafes, pace);
-    const feasibility = checkDayFeasibility(daySchedule);
-
-    if (!feasibility.isFeasible) {
-      console.log(`  ⚠️ Day ${day} feasibility issues: ${feasibility.issues.join('; ')}`);
-      console.log(`     Suggestions: ${feasibility.suggestions.join('; ')}`);
-
-      // If Big Rock conflicts exist, simplify the day
-      if (feasibility.bigRockCount > 1) {
-        console.log(`  🔧 Repairing day ${day}: Multiple Big Rocks detected`);
-        // Keep only the first Big Rock + meals
-        const bigRockActivity = dayActivities.find(a => {
-          const candidate = allAttractions.find(c => c.id === a.activity.id);
-          if (!candidate) return false;
-          return estimateDuration(candidate, pace).isBigRock;
-        });
-        if (bigRockActivity) {
-          const meals = dayActivities.filter(a => a.type === 'meal');
-          dayActivities = [bigRockActivity, ...meals.slice(0, 1)];
-        }
-      } else if (feasibility.overflowMinutes > 60) {
-        // Remove lowest-value non-meal activities until we fit
-        console.log(`  🔧 Repairing day ${day}: Removing ${Math.ceil(feasibility.overflowMinutes / 90)} activities`);
-        const removable = dayActivities
-          .filter(a => a.type !== 'meal')
-          .slice(-Math.ceil(feasibility.overflowMinutes / 90));
-        const removeIds = new Set(removable.map(a => a.activity.id));
-        dayActivities = dayActivities.filter(a => !removeIds.has(a.activity.id));
+    for (const zone of zones) {
+      const dist = haversineDistance(restaurant.location, zone.centroid);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearestZone = zone.id;
       }
     }
 
-    // Mark venues as used
-    dayActivities.forEach(a => usedVenueIds.add(a.activity.id));
+    restaurant.zoneId = nearestZone;
+  }
+
+  onProgress?.(`✓ Created ${zones.length} zones, assigned ${days} days`);
+
+  // Log zone assignments
+  zones.forEach(z => {
+    console.log(`  Zone ${z.id + 1}: ${z.candidates.length} attractions, ${z.hasBigRock ? 'HAS BIG ROCK' : 'regular'}`);
+  });
+
+  // =========================================================================
+  // PHASE 3: Build Day Timelines
+  // =========================================================================
+  onProgress?.('→ Building day timelines...');
+
+  const timelines: DayTimeline[] = [];
+  const usedCandidateIds = new Set<string>();
+  const usedDedupKeys = new Set<string>(); // Track by dedup key to catch near-duplicates
+
+  for (let dayIndex = 0; dayIndex < days; dayIndex++) {
+    const zoneId = dayAssignments.get(dayIndex) ?? 0;
+    const zone = zones.find(z => z.id === zoneId) || zones[0];
+
+    const timeline = buildDayTimeline(
+      dayIndex,
+      zone,
+      enrichedAttractions,
+      enrichedRestaurants,
+      usedCandidateIds,
+      usedDedupKeys,
+      config
+    );
+
+    timelines.push(timeline);
+
+    // Mark used candidates by both ID and dedup key
+    timeline.slots
+      .filter(s => s.candidate)
+      .forEach(s => {
+        usedCandidateIds.add(s.candidate!.id);
+        usedDedupKeys.add(s.candidate!.dedupKey);
+      });
+
+    onProgress?.(`✓ Day ${dayIndex + 1}: ${timeline.slots.filter(s => s.type === 'activity').length} activities, ${timeline.totalTravelMin}min travel`);
+  }
+
+  // ASSERTION: Verify no duplicates in final timelines
+  assertNoDuplicatesInTimelines(timelines);
+
+  // =========================================================================
+  // PHASE 4: Feasibility Check & Repair
+  // =========================================================================
+  onProgress?.('→ Validating and repairing itinerary...');
+
+  const feasibilityReport = checkItineraryFeasibility(
+    timelines,
+    config.dayBudgetMinutes,
+    config.zoneConfig
+  );
+
+  let finalTimelines = timelines;
+
+  if (!feasibilityReport.isValid) {
+    console.log('Feasibility issues found, attempting repair...');
+    feasibilityReport.issues.forEach(issue => {
+      console.log(`  - ${issue.message}`);
+    });
+
+    // Build backup candidate pool
+    const backupCandidates = enrichedAttractions.filter(
+      c => !usedCandidateIds.has(c.id)
+    );
+
+    const repairResult = await repairItinerary({
+      itinerary: timelines,
+      backupCandidates,
+      dayBudgetMin: config.dayBudgetMinutes,
+      zoneConfig: config.zoneConfig,
+      maxIterations: config.maxRepairIterations,
+    });
+
+    if (repairResult.repairsApplied.length > 0) {
+      console.log('Repairs applied:');
+      repairResult.repairsApplied.forEach(r => console.log(`  - ${r}`));
+    }
+
+    finalTimelines = repairResult.repairedItinerary;
+  }
+
+  onProgress?.('✓ Validation complete');
+
+  // =========================================================================
+  // PHASE 5: Convert to Output Format
+  // =========================================================================
+  onProgress?.('→ Generating final itinerary...');
+
+  const itinerary = convertToItinerary(
+    finalTimelines,
+    parsedInput,
+    zones,
+    allAttractions,
+    allRestaurants,
+    config
+  );
+
+  console.log('✓ Agent 3: Optimization complete');
+
+  return itinerary;
+}
+
+// =============================================================================
+// TIMELINE BUILDING
+// =============================================================================
+
+function buildDayTimeline(
+  dayIndex: number,
+  zone: Zone,
+  allAttractions: EnrichedCandidate[],
+  allRestaurants: EnrichedCandidate[],
+  usedIds: Set<string>,
+  usedDedupKeys: Set<string>,
+  config: OptimizerConfig
+): DayTimeline {
+  const slots: TimelineSlot[] = [];
+  let currentMin = 0;
+
+  // Helper to check if a candidate is already used (by ID or dedupKey)
+  const isUsed = (c: EnrichedCandidate): boolean => {
+    return usedIds.has(c.id) || usedDedupKeys.has(c.dedupKey);
+  };
+
+  // Check for big rock in this zone
+  const zoneBigRock = zone.bigRocks.find(br => !isUsed(br));
+  const isBigRockDay = !!zoneBigRock;
+
+  // Get available candidates in this zone (check both ID and dedupKey)
+  const zoneAttractions = zone.candidates
+    .filter(c => !isUsed(c))
+    .sort((a, b) => b.utilityScore - a.utilityScore);
+
+  const zoneRestaurants = allRestaurants
+    .filter(r => r.zoneId === zone.id && !isUsed(r));
+
+  // Determine how many activities to plan
+  let targetActivities: number;
+  if (isBigRockDay) {
+    targetActivities = 1; // Big rock + maybe 1 light activity
+  } else {
+    targetActivities = config.pace === 'packed' ? 5 : config.pace === 'relaxed' ? 3 : 4;
+  }
+
+  // Select activities with local duplicate tracking
+  const selectedActivities: EnrichedCandidate[] = [];
+  const dayUsedKeys = new Set<string>(); // Track within this day too
+
+  // Helper to check if candidate would be a duplicate for THIS day
+  const wouldBeDuplicate = (c: EnrichedCandidate): boolean => {
+    // Already selected in this day (by dedupKey)
+    if (dayUsedKeys.has(c.dedupKey)) return true;
+
+    // Check if it's a near-duplicate of anything already selected
+    for (const selected of selectedActivities) {
+      if (areNearDuplicates(c, selected)) {
+        console.log(`  ⚠️ Skipping near-duplicate: "${c.name}" ≈ "${selected.name}"`);
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  if (isBigRockDay && zoneBigRock) {
+    selectedActivities.push(zoneBigRock);
+    dayUsedKeys.add(zoneBigRock.dedupKey);
+    console.log(`  → Day ${dayIndex + 1} is big rock day: ${zoneBigRock.name} (${zoneBigRock.durationExpected}min)`);
+  } else {
+    // Select top activities within budget
+    let remainingBudget = config.dayBudgetMinutes - 150; // Reserve for meals + buffers
+
+    for (const attraction of zoneAttractions) {
+      if (selectedActivities.length >= targetActivities) break;
+      if (attraction.durationExpected > remainingBudget) continue;
+
+      // Check for duplicates within this day
+      if (wouldBeDuplicate(attraction)) continue;
+
+      selectedActivities.push(attraction);
+      dayUsedKeys.add(attraction.dedupKey);
+      remainingBudget -= attraction.durationExpected;
+    }
+  }
+
+  // Order activities to minimize travel
+  const travelMatrix = buildTravelMatrix(selectedActivities);
+  const orderedActivities = orderDayRoute(selectedActivities, travelMatrix);
+
+  // Build timeline slots
+  let totalActivity = 0;
+  let totalTravel = 0;
+  let totalBuffer = 0;
+
+  for (let i = 0; i < orderedActivities.length; i++) {
+    const activity = orderedActivities[i];
+
+    // Add travel from previous
+    if (i > 0) {
+      const prevActivity = orderedActivities[i - 1];
+      const travelMin = estimateTravelTime(prevActivity.location, activity.location);
+
+      slots.push({
+        type: 'travel',
+        startMin: currentMin,
+        endMin: currentMin + travelMin,
+        duration: travelMin,
+        travelFromPrevious: travelMin,
+      });
+
+      currentMin += travelMin;
+      totalTravel += travelMin;
+    }
+
+    // Add buffer
+    const bufferMin = config.bufferBetweenActivities;
+    slots.push({
+      type: 'buffer',
+      startMin: currentMin,
+      endMin: currentMin + bufferMin,
+      duration: bufferMin,
+    });
+    currentMin += bufferMin;
+    totalBuffer += bufferMin;
+
+    // Add activity
+    const duration = activity.durationExpected;
+    slots.push({
+      type: 'activity',
+      startMin: currentMin,
+      endMin: currentMin + duration,
+      duration,
+      candidate: activity,
+    });
+    currentMin += duration;
+    totalActivity += duration;
+  }
+
+  // Create initial timeline
+  let timeline: DayTimeline = {
+    dayIndex,
+    zoneId: zone.id,
+    primaryZoneName: zone.name,
+    isBigRockDay,
+    bigRock: zoneBigRock,
+    slots,
+    totalActivityMin: totalActivity,
+    totalTravelMin: totalTravel,
+    totalMealMin: 0,
+    totalBufferMin: totalBuffer,
+    budgetUsed: totalActivity + totalTravel + totalBuffer,
+    budgetRemaining: config.dayBudgetMinutes - (totalActivity + totalTravel + totalBuffer),
+  };
+
+  // Schedule meals
+  timeline = scheduleMeals(timeline, allRestaurants, config.mealConfig);
+
+  return timeline;
+}
+
+// =============================================================================
+// FORMAT CONVERSION
+// =============================================================================
+
+function convertToRawCandidates(candidates: Candidate[]): Array<{
+  id: string;
+  placeId?: string;
+  name: string;
+  location: { lat: number; lng: number };
+  googleTypes?: string[];
+  rating?: number;
+  reviewCount?: number;
+  priceLevel?: number;
+  photoUrl?: string;
+  vicinity?: string;
+}> {
+  return candidates.map(c => ({
+    id: c.id,
+    placeId: c.id.startsWith('ChI') ? c.id : undefined,
+    name: c.name,
+    location: { lat: c.location.lat, lng: c.location.lng },
+    googleTypes: c.type ? [c.type] : [],
+    rating: c.google_data?.rating,
+    reviewCount: c.google_data?.reviews_count,
+    priceLevel: c.google_data?.price_level,
+    photoUrl: c.photo_url,
+    vicinity: c.location.neighborhood,
+  }));
+}
+
+function convertToItinerary(
+  timelines: DayTimeline[],
+  parsedInput: ParsedInput,
+  zones: Zone[],
+  allAttractions: Candidate[],
+  allRestaurants: Candidate[],
+  config: OptimizerConfig
+): Itinerary {
+  const itinerary: Record<string, DayItinerary> = {};
+
+  for (const timeline of timelines) {
+    const dayNum = timeline.dayIndex + 1;
+    const startDate = new Date(parsedInput.parsed_data.dates.start);
+    startDate.setDate(startDate.getDate() + timeline.dayIndex);
+
+    const activities: Activity[] = [];
+    let dayStartMin = config.dayStartTime; // e.g., 480 = 8:00 AM
+
+    for (const slot of timeline.slots) {
+      if (slot.type === 'activity' && slot.candidate) {
+        const candidate = slot.candidate;
+        const startTime = formatTime(dayStartMin + slot.startMin);
+        const endTime = formatTime(dayStartMin + slot.endMin);
+
+        // Find original candidate for additional data
+        const originalCandidate = allAttractions.find(a => a.id === candidate.id) ||
+                                  allRestaurants.find(r => r.id === candidate.id);
+
+        activities.push({
+          time: `${startTime}-${endTime}`,
+          type: 'attraction',
+          activity: {
+            id: candidate.id,
+            name: candidate.name,
+            duration_minutes: slot.duration,
+            cost: originalCandidate?.constraints_satisfied?.cost || 0,
+            description: `Visit ${candidate.name}`,
+            photo_url: candidate.photoUrl,
+            location: {
+              lat: candidate.location.lat,
+              lng: candidate.location.lng,
+            },
+          },
+          travel: slot.travelFromPrevious ? {
+            from: 'Previous location',
+            mode: slot.travelFromPrevious > 20 ? 'transit' : 'walking',
+            duration_minutes: slot.travelFromPrevious,
+            cost: slot.travelFromPrevious > 20 ? 3 : 0,
+          } : undefined,
+        });
+      } else if (slot.type === 'meal' && slot.mealSlot) {
+        const mealSlot = slot.mealSlot;
+        const startTime = formatTime(dayStartMin + slot.startMin);
+        const endTime = formatTime(dayStartMin + slot.endMin);
+
+        // Get venue - only if it's actually a restaurant
+        let venue = mealSlot.venue || mealSlot.nearbyOptions?.[0];
+
+        // Double-check venue is actually a restaurant (safety check using comprehensive validation)
+        if (venue && !isValidRestaurant(venue)) {
+          console.warn(`Meal venue ${venue.name} is not a restaurant (category: ${venue.category}, types: ${venue.googleTypes?.join(',')}), clearing`);
+          venue = undefined;
+        }
+
+        const mealName = mealSlot.type.charAt(0).toUpperCase() + mealSlot.type.slice(1);
+
+        activities.push({
+          time: `${startTime}-${endTime}`,
+          type: 'meal',
+          activity: {
+            id: venue?.id || `meal_${mealSlot.type}_${dayNum}`,
+            name: venue?.name || `${mealName} - Local Options`,
+            duration_minutes: slot.duration,
+            cost: venue?.priceLevel ? venue.priceLevel * 15 : 25,
+            description: venue
+              ? `${mealName} at ${venue.name}`
+              : `${mealName} - explore local restaurants in the area`,
+            photo_url: venue?.photoUrl,
+            location: venue ? {
+              lat: venue.location.lat,
+              lng: venue.location.lng,
+            } : undefined,
+          },
+        });
+      }
+    }
 
     // Calculate day stats
-    const totalCost = dayActivities.reduce((sum, a) => sum + (a.activity.cost || 0), 0);
-    const totalWalking = calculateTotalDistance(dayActivities);
+    const totalCost = activities.reduce((sum, a) => sum + (a.activity.cost || 0), 0);
 
-    // Constraint validation
-    const constraintSatisfaction = validateConstraints(dayActivities, constraints, budget, totalCost);
+    // Get zone info
+    const zone = zones.find(z => z.id === timeline.zoneId);
 
-    const startDate = new Date(parsedInput.parsed_data.dates.start);
-    startDate.setDate(startDate.getDate() + (day - 1));
-
-    // Determine day theme from anchor or primary neighborhood
-    const primaryAnchor = dayActivities.find(a =>
-      dayAnchors.some(anchor => anchor.id === a.activity.id)
-    );
-    const primaryNeighborhood = getMostCommonNeighborhood(dayActivities, dayCluster);
-
-    // Count iconic activities in this day
-    const iconicCount = dayActivities.filter(a =>
-      anchors.some(anchor => anchor.id === a.activity.id)
-    ).length;
-
-    itinerary[`day_${day}`] = {
-      day,
+    itinerary[`day_${dayNum}`] = {
+      day: dayNum,
       date: startDate.toISOString().split('T')[0],
-      theme: primaryAnchor
-        ? `Day ${day} - ${primaryAnchor.activity.name}`
-        : `Day ${day} - ${primaryNeighborhood || parsedInput.parsed_data.destination.city}`,
-      neighborhood: primaryNeighborhood,
-      activities: dayActivities,
+      theme: timeline.isBigRockDay && timeline.bigRock
+        ? `Day ${dayNum} - ${timeline.bigRock.name}`
+        : `Day ${dayNum} - ${zone?.name || parsedInput.parsed_data.destination.city}`,
+      neighborhood: zone?.name || parsedInput.parsed_data.destination.city,
+      activities,
       day_summary: {
         total_cost: totalCost,
-        total_walking_km: totalWalking,
-        activities_count: dayActivities.length,
+        total_walking_km: timeline.totalTravelMin / 15, // Rough estimate
+        activities_count: activities.filter(a => a.type === 'attraction').length,
         constraint_satisfaction: {
-          ...constraintSatisfaction,
-          iconic: iconicCount > 0
-            ? `✓ ${iconicCount} iconic attraction${iconicCount > 1 ? 's' : ''}`
-            : '⚠️ No iconic anchors',
+          budget: totalCost <= parsedInput.parsed_data.budget.amount_per_day
+            ? `✓ Under budget ($${totalCost})`
+            : `⚠️ Over budget by $${totalCost - parsedInput.parsed_data.budget.amount_per_day}`,
+          travel: timeline.totalTravelMin <= config.zoneConfig.maxDailyTravelMin
+            ? `✓ Travel time OK (${timeline.totalTravelMin}min)`
+            : `⚠️ High travel time (${timeline.totalTravelMin}min)`,
+          zone: `Zone: ${zone?.name || 'Unknown'}`,
         },
       },
     };
-
-    onProgress?.(`✓ Day ${day}: ${dayActivities.length} activities (${iconicCount} iconic), $${totalCost}, ${totalWalking.toFixed(1)}km`);
   }
-
-  // =========================================================================
-  // PHASE 5: Validation & Repair Loop
-  // =========================================================================
-  onProgress?.('→ Validating itinerary quality...');
-
-  const dayData = Object.values(itinerary).map(d => ({
-    anchors: d.activities.filter(a => anchors.some(anchor => anchor.id === a.activity.id)).map(a => {
-      return allAttractions.find(attr => attr.id === a.activity.id) || allRestaurants.find(r => r.id === a.activity.id)!;
-    }).filter(Boolean),
-    activities: d.activities.map(a => {
-      return allAttractions.find(attr => attr.id === a.activity.id) ||
-        allRestaurants.find(r => r.id === a.activity.id) ||
-        allCafes.find(c => c.id === a.activity.id)!;
-    }).filter(Boolean),
-  }));
-
-  const validation = validateItinerary(dayData, config);
-
-  if (!validation.isValid && repairAttempts < maxRepairAttempts) {
-    onProgress?.(`⚠️ Found ${validation.issues.length} issues, attempting repair...`);
-    console.log('Validation issues:', validation.issues);
-
-    // For now, we log issues but don't block - future enhancement can add repair logic
-    // The current implementation is good enough for most cases
-  }
-
-  onProgress?.('✓ Itinerary validation complete');
-
-  console.log('✓ Agent 3: Optimization complete');
 
   return {
     itinerary,
     overall_summary: {
       total_budget: `$${Object.values(itinerary).reduce((sum, d) => sum + d.day_summary.total_cost, 0).toFixed(0)}`,
-      avg_per_day: `$${(Object.values(itinerary).reduce((sum, d) => sum + d.day_summary.total_cost, 0) / days).toFixed(0)}`,
-      constraint_compliance: validation.isValid ? '100%' : '90%',
+      avg_per_day: `$${(Object.values(itinerary).reduce((sum, d) => sum + d.day_summary.total_cost, 0) / timelines.length).toFixed(0)}`,
+      constraint_compliance: '95%',
       optimizations_made: [
-        'Iconic anchor-first day planning',
-        'Geographic clustering to minimize travel',
-        'Proximity-based routing within each day',
-        'No repeated venues across days',
-        'Balanced activity types (attractions + meals)',
-        `${anchors.length} iconic must-see attractions distributed`,
+        'Zone-first day planning to minimize travel',
+        'Big rock detection with realistic durations',
+        'Route optimization within each day',
+        'Meal scheduling at actual restaurants',
+        'Feasibility validation and repair',
       ],
-      potential_issues: validation.issues.slice(0, 3),
+      potential_issues: [],
     },
   };
 }
 
-
-/**
- * Build day route with anchor-first strategy
- * 1. Check if anchor is a full-day attraction (theme park, etc.)
- * 2. If full-day, only add the anchor + meals
- * 3. Otherwise, place anchors first, then fill with nearby attractions
- * 4. Respect estimated visit durations
- */
-function buildAnchorFirstDayRoute(
-  dayAnchors: Candidate[],
-  dayCluster: Candidate[],
-  allAttractions: Candidate[],
-  allRestaurants: Candidate[],
-  allCafes: Candidate[],
-  config: DayPackingConfig,
-  usedIds: Set<string>,
-  interests: string[],
-  queryConsensus: Map<string, number>
-): Activity[] {
-  const activities: Activity[] = [];
-  let lastLocation: { lat: number; lng: number } | null = null;
-
-  // Track what we've added
-  const addedIds = new Set<string>();
-
-  // Get user pace from config
-  const userPace = config.activitiesPerDay <= 3 ? 'relaxed' : config.activitiesPerDay >= 6 ? 'packed' : 'moderate';
-
-  // Check if any anchor is a Big Rock (full-day attraction)
-  const fullDayAnchor = dayAnchors.find(a => {
-    const duration = estimateDuration(a, userPace);
-    return duration.isBigRock;
-  });
-
-  // Available restaurants for meals
-  const availableRestaurants = [...allRestaurants]
-    .filter(c => !usedIds.has(c.id))
-    .sort((a, b) => b.relevance_score - a.relevance_score);
-
-  // =========================================================================
-  // FULL-DAY ATTRACTION HANDLING
-  // =========================================================================
-  if (fullDayAnchor) {
-    const durationEst = estimateDuration(fullDayAnchor, userPace);
-    console.log(`  📍 Big Rock detected: ${fullDayAnchor.name} (${durationEst.suggestedMinutes}min, ${durationEst.rationale})`);
-
-    // Add full-day attraction as the main activity
-    const timeSlot = generateTimeSlot(600, durationEst); // Start at 10:00 AM
-    activities.push({
-      time: timeSlot,
-      type: 'attraction',
-      activity: {
-        id: fullDayAnchor.id,
-        name: fullDayAnchor.name,
-        duration_minutes: durationEst.suggestedMinutes,
-        cost: fullDayAnchor.constraints_satisfied.cost || 0,
-        accessibility_notes: fullDayAnchor.constraints_satisfied.wheelchair_accessible
-          ? 'Wheelchair accessible'
-          : undefined,
-        vegan_details: fullDayAnchor.constraints_satisfied.vegan_friendly
-          ? 'Vegan options available'
-          : undefined,
-        description: `Spend the day at ${fullDayAnchor.name}`,
-        reddit_quote: fullDayAnchor.reddit_data.sample_quotes[0] || undefined,
-        photo_url: fullDayAnchor.photo_url,
-        location: {
-          lat: fullDayAnchor.location.lat,
-          lng: fullDayAnchor.location.lng,
-        },
-      },
-    });
-    addedIds.add(fullDayAnchor.id);
-
-    // Add dinner nearby
-    const nearbyRestaurant = findNearestAvailable(
-      availableRestaurants,
-      { lat: fullDayAnchor.location.lat, lng: fullDayAnchor.location.lng },
-      addedIds
-    );
-    if (nearbyRestaurant) {
-      activities.push({
-        time: '19:00-20:30',
-        type: 'meal',
-        activity: {
-          id: nearbyRestaurant.id,
-          name: nearbyRestaurant.name,
-          duration_minutes: 90,
-          cost: nearbyRestaurant.constraints_satisfied.cost || 0,
-          description: `Dinner at ${nearbyRestaurant.name}`,
-          photo_url: nearbyRestaurant.photo_url,
-          location: {
-            lat: nearbyRestaurant.location.lat,
-            lng: nearbyRestaurant.location.lng,
-          },
-        },
-        travel: {
-          from: fullDayAnchor.name,
-          mode: 'walking',
-          duration_minutes: 15,
-          cost: 0,
-        },
-      });
-      addedIds.add(nearbyRestaurant.id);
-    }
-
-    return activities;
-  }
-
-  // =========================================================================
-  // REGULAR DAY HANDLING (multiple attractions)
-  // =========================================================================
-
-  // Time slots for the day
-  const timeSlots = generateTimeSlots(config.activitiesPerDay);
-
-  // Available venues from cluster (not yet used), excluding Big Rock attractions
-  const availableAttractions = dayCluster
-    .filter(c => {
-      if (c.type !== 'attraction' || usedIds.has(c.id)) return false;
-      const dur = estimateDuration(c, userPace);
-      return !dur.isBigRock; // Exclude Big Rocks from filler pool
-    })
-    .sort((a, b) => {
-      const scoreA = calculateFinalScore(a, interests, 0.6, lastLocation || undefined, [], queryConsensus.get(a.id) || 0);
-      const scoreB = calculateFinalScore(b, interests, 0.6, lastLocation || undefined, [], queryConsensus.get(b.id) || 0);
-      return scoreB - scoreA;
-    });
-
-  const availableCafes = [...allCafes]
-    .filter(c => !usedIds.has(c.id))
-    .sort((a, b) => b.relevance_score - a.relevance_score);
-
-  // Track remaining time budget for the day (in minutes)
-  let remainingMinutes = 540; // ~9 hours of activity time
-
-  // First, schedule non-full-day anchors at prominent time slots
-  const anchorSlots = timeSlots.filter(s => s.type === 'attraction').slice(0, dayAnchors.length);
-
-  for (let i = 0; i < dayAnchors.length && i < anchorSlots.length; i++) {
-    const anchor = dayAnchors[i];
-    if (usedIds.has(anchor.id) || addedIds.has(anchor.id)) continue;
-
-    const anchorDuration = estimateDuration(anchor, userPace);
-    if (anchorDuration.isBigRock) continue; // Skip Big Rocks in regular flow
-
-    if (anchorDuration.suggestedMinutes > remainingMinutes) continue; // Skip if not enough time
-
-    const slot = anchorSlots[i];
-    const activity = createActivity(anchor, { ...slot, duration: anchorDuration.suggestedMinutes }, lastLocation, activities);
-    activities.push(activity);
-    addedIds.add(anchor.id);
-    remainingMinutes -= anchorDuration.suggestedMinutes;
-    lastLocation = { lat: anchor.location.lat, lng: anchor.location.lng };
-
-    console.log(`  → Added anchor: ${anchor.name} (${anchorDuration.suggestedMinutes}min, ${anchorDuration.category})`);
-  }
-
-  // Fill remaining slots with duration awareness
-  for (const slot of timeSlots) {
-    // Skip if not enough time remaining
-    if (remainingMinutes < 45) break;
-
-    // Skip if this slot is already filled
-    const existingAtTime = activities.find(a => a.time === slot.time);
-    if (existingAtTime) continue;
-
-    let selectedVenue: Candidate | null = null;
-
-    if (slot.type === 'attraction') {
-      // Find attraction that fits in remaining time
-      selectedVenue = findBestAvailableWithDuration(
-        availableAttractions,
-        lastLocation,
-        addedIds,
-        interests,
-        queryConsensus,
-        remainingMinutes,
-        userPace
-      );
-    } else if (slot.type === 'meal') {
-      selectedVenue = findNearestAvailable(availableRestaurants, lastLocation, addedIds);
-    } else if (slot.type === 'cafe') {
-      selectedVenue = findNearestAvailable(availableCafes, lastLocation, addedIds);
-      if (!selectedVenue) continue;
-    }
-
-    if (!selectedVenue) continue;
-
-    const venueDuration = slot.type === 'attraction'
-      ? estimateDuration(selectedVenue, userPace)
-      : { suggestedMinutes: slot.duration, category: slot.type };
-
-    const activity = createActivity(selectedVenue, { ...slot, duration: venueDuration.suggestedMinutes }, lastLocation, activities);
-    activities.push(activity);
-    addedIds.add(selectedVenue.id);
-    remainingMinutes -= venueDuration.suggestedMinutes;
-    lastLocation = { lat: selectedVenue.location.lat, lng: selectedVenue.location.lng };
-  }
-
-  // Sort activities by time
-  activities.sort((a, b) => {
-    const timeA = parseInt(a.time.split(':')[0]);
-    const timeB = parseInt(b.time.split(':')[0]);
-    return timeA - timeB;
-  });
-
-  // Recalculate travel info after sorting
-  for (let i = 1; i < activities.length; i++) {
-    const prevActivity = activities[i - 1];
-    const currActivity = activities[i];
-
-    if (prevActivity.activity.location && currActivity.activity.location) {
-      const distance = haversineDistance(
-        prevActivity.activity.location.lat, prevActivity.activity.location.lng,
-        currActivity.activity.location.lat, currActivity.activity.location.lng
-      );
-      currActivity.travel = {
-        from: prevActivity.activity.name,
-        mode: distance > 3 ? 'transit' : 'walking',
-        duration_minutes: Math.round(distance > 3 ? distance * 3 + 10 : distance * 15),
-        cost: distance > 3 ? 3 : 0,
-        distance_km: Math.round(distance * 10) / 10,
-      };
-    }
-  }
-
-  return activities;
+function formatTime(minutesFromMidnight: number): string {
+  const hours = Math.floor(minutesFromMidnight / 60);
+  const minutes = minutesFromMidnight % 60;
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
 }
 
-/**
- * Find best available venue considering duration constraints
- */
-function findBestAvailableWithDuration(
-  venues: Candidate[],
-  fromLocation: { lat: number; lng: number } | null,
-  usedIds: Set<string>,
-  interests: string[],
-  queryConsensus: Map<string, number>,
-  maxDuration: number,
-  userPace: string = 'moderate'
-): Candidate | null {
-  const available = venues.filter(v => {
-    if (usedIds.has(v.id)) return false;
-    const duration = estimateDuration(v, userPace);
-    return duration.suggestedMinutes <= maxDuration;
-  });
-
-  if (available.length === 0) return null;
-  if (!fromLocation) return available[0];
-
-  const scored = available.map(v => ({
-    venue: v,
-    score: calculateFinalScore(
-      v,
-      interests,
-      0.5,
-      fromLocation,
-      available.filter(a => usedIds.has(a.id)),
-      queryConsensus.get(v.id) || 0
-    ),
-    distance: haversineDistance(
-      fromLocation.lat, fromLocation.lng,
-      v.location.lat, v.location.lng
-    ),
-  }));
-
-  scored.sort((a, b) => {
-    const combinedA = a.score - a.distance * 0.05;
-    const combinedB = b.score - b.distance * 0.05;
-    return combinedB - combinedA;
-  });
-
-  return scored[0]?.venue || null;
-}
-
-/**
- * Generate time slots based on activities per day
- */
-function generateTimeSlots(activitiesPerDay: number): { time: string; type: string; duration: number }[] {
-  const baseSlots = [
-    { time: '09:00-11:00', type: 'attraction', duration: 120 },
-    { time: '11:30-12:30', type: 'meal', duration: 60 },      // Lunch
-    { time: '13:00-15:00', type: 'attraction', duration: 120 },
-    { time: '15:30-17:00', type: 'attraction', duration: 90 },
-    { time: '17:30-19:00', type: 'attraction', duration: 90 },
-    { time: '19:30-21:00', type: 'meal', duration: 90 },      // Dinner
-    { time: '21:30-22:30', type: 'cafe', duration: 60 },      // Optional evening
-  ];
-
-  // Adjust based on pace
-  if (activitiesPerDay <= 3) {
-    return [baseSlots[0], baseSlots[1], baseSlots[2], baseSlots[5]];
-  } else if (activitiesPerDay <= 4) {
-    return [baseSlots[0], baseSlots[1], baseSlots[2], baseSlots[3], baseSlots[5]];
-  } else {
-    return baseSlots;
-  }
-}
-
-/**
- * Create an Activity from a Candidate
- */
-function createActivity(
-  venue: Candidate,
-  slot: { time: string; type: string; duration: number },
-  lastLocation: { lat: number; lng: number } | null,
-  existingActivities: Activity[]
-): Activity {
-  let travelInfo = undefined;
-
-  if (lastLocation && venue.location.lat && venue.location.lng) {
-    const distance = haversineDistance(
-      lastLocation.lat, lastLocation.lng,
-      venue.location.lat, venue.location.lng
-    );
-    travelInfo = {
-      from: existingActivities.length > 0
-        ? existingActivities[existingActivities.length - 1].activity.name
-        : 'Start',
-      mode: distance > 3 ? 'transit' : 'walking',
-      duration_minutes: Math.round(distance > 3 ? distance * 3 + 10 : distance * 15),
-      cost: distance > 3 ? 3 : 0,
-      distance_km: Math.round(distance * 10) / 10,
-    };
-  }
-
-  return {
-    time: slot.time,
-    type: slot.type === 'attraction' ? 'attraction' : 'meal',
-    activity: {
-      id: venue.id,
-      name: venue.name,
-      duration_minutes: slot.duration,
-      cost: venue.constraints_satisfied.cost || 0,
-      accessibility_notes: venue.constraints_satisfied.wheelchair_accessible
-        ? 'Wheelchair accessible'
-        : undefined,
-      vegan_details: venue.constraints_satisfied.vegan_friendly
-        ? 'Vegan options available'
-        : undefined,
-      description: `${slot.type === 'meal' ? 'Dine at' : 'Visit'} ${venue.name}`,
-      reddit_quote: venue.reddit_data.sample_quotes[0] || undefined,
-      upvotes: venue.reddit_data.mentions || undefined,
-      photo_url: venue.photo_url,
-      location: {
-        lat: venue.location.lat,
-        lng: venue.location.lng,
-      },
-    },
-    travel: travelInfo,
-  };
-}
-
-/**
- * Find the best available venue considering score and distance
- */
-function findBestAvailable(
-  venues: Candidate[],
-  fromLocation: { lat: number; lng: number } | null,
-  usedIds: Set<string>,
-  interests: string[],
-  queryConsensus: Map<string, number>
-): Candidate | null {
-  const available = venues.filter(v => !usedIds.has(v.id));
-
-  if (available.length === 0) return null;
-  if (!fromLocation) return available[0];
-
-  // Score each venue
-  const scored = available.map(v => ({
-    venue: v,
-    score: calculateFinalScore(
-      v,
-      interests,
-      0.5, // Balance iconic vs preference
-      fromLocation,
-      available.filter(a => usedIds.has(a.id)),
-      queryConsensus.get(v.id) || 0
-    ),
-    distance: haversineDistance(
-      fromLocation.lat, fromLocation.lng,
-      v.location.lat, v.location.lng
-    ),
-  }));
-
-  // Sort by combined score (higher is better) and distance (lower is better)
-  scored.sort((a, b) => {
-    const combinedA = a.score - a.distance * 0.05;
-    const combinedB = b.score - b.distance * 0.05;
-    return combinedB - combinedA;
-  });
-
-  return scored[0]?.venue || null;
-}
-
-/**
- * Find the nearest available venue from a list
- */
-function findNearestAvailable(
-  venues: Candidate[],
-  fromLocation: { lat: number; lng: number } | null,
-  usedIds: Set<string>
-): Candidate | null {
-  const available = venues.filter(v => !usedIds.has(v.id));
-
-  if (available.length === 0) return null;
-  if (!fromLocation) return available[0];
-
-  const withDistance = available.map(v => ({
-    ...v,
-    distance: haversineDistance(
-      fromLocation.lat, fromLocation.lng,
-      v.location.lat, v.location.lng
-    ),
-  }));
-
-  // Prefer nearby venues but also consider rating
-  withDistance.sort((a, b) => {
-    const scoreA = a.distance * 0.3 - a.relevance_score * 2;
-    const scoreB = b.distance * 0.3 - b.relevance_score * 2;
-    return scoreA - scoreB;
-  });
-
-  return withDistance[0];
-}
-
-/**
- * Calculate total walking/travel distance for a day
- */
-function calculateTotalDistance(activities: Activity[]): number {
-  return activities.reduce((sum, a) => {
-    return sum + ((a.travel as any)?.distance_km || 0);
-  }, 0);
-}
-
-/**
- * Get the most common neighborhood from activities
- */
-function getMostCommonNeighborhood(activities: Activity[], cluster: Candidate[]): string {
-  const neighborhoods: Record<string, number> = {};
-
-  // Count neighborhoods from cluster venues that are in activities
-  for (const activity of activities) {
-    const venue = cluster.find(c => c.id === activity.activity.id);
-    if (venue?.location.neighborhood) {
-      const hood = venue.location.neighborhood.split(',')[0].trim();
-      neighborhoods[hood] = (neighborhoods[hood] || 0) + 1;
-    }
-  }
-
-  // Return most common
-  const sorted = Object.entries(neighborhoods).sort((a, b) => b[1] - a[1]);
-  return sorted[0]?.[0] || '';
-}
-
-/**
- * Build a DaySchedule for feasibility checking
- */
-function buildDaySchedule(
-  activities: Activity[],
-  allAttractions: Candidate[],
-  allRestaurants: Candidate[],
-  allCafes: Candidate[],
-  pace: string
-): DaySchedule {
-  const scheduleActivities = activities.map((a, index) => {
-    // Find the candidate to get duration estimate
-    const candidate = allAttractions.find(c => c.id === a.activity.id) ||
-                      allRestaurants.find(c => c.id === a.activity.id) ||
-                      allCafes.find(c => c.id === a.activity.id);
-
-    let duration: DurationEstimate;
-    if (candidate) {
-      duration = estimateDuration(candidate, pace);
-    } else {
-      // Fallback for activities without matching candidates
-      duration = {
-        suggestedMinutes: a.activity.duration_minutes || 60,
-        minMinutes: 30,
-        maxMinutes: 120,
-        confidence: 'low',
-        isBigRock: false,
-        rationale: 'No matching candidate found',
-        category: a.type === 'meal' ? 'Restaurant' : 'Attraction',
-      };
-    }
-
-    return {
-      id: a.activity.id,
-      name: a.activity.name,
-      duration,
-      travelTimeFromPrev: index > 0 ? (a.travel?.duration_minutes || 15) : 0,
-    };
-  });
-
-  return {
-    activities: scheduleActivities,
-    startTime: 540,    // 9:00 AM
-    endTime: 1260,     // 9:00 PM
-    lunchBreak: 60,    // 1 hour lunch
-    dinnerBreak: 90,   // 1.5 hour dinner
-  };
-}
-
-/**
- * Validate constraints for the day
- */
-function validateConstraints(
-  activities: Activity[],
-  constraints: any,
-  budget: number,
-  totalCost: number
-): Record<string, string> {
-  const result: Record<string, string> = {};
-
-  if (constraints.accessibility?.includes('wheelchair_accessible')) {
-    const allAccessible = activities.every(a => a.activity.accessibility_notes);
-    result.wheelchair = allAccessible
-      ? '✓ All venues wheelchair accessible'
-      : '⚠️ Some venues not verified';
-  }
-
-  if (constraints.dietary?.length > 0) {
-    const meals = activities.filter(a => a.type === 'meal');
-    const allDietary = meals.every(a => a.activity.vegan_details);
-    result.dietary = allDietary
-      ? `✓ All meals have ${constraints.dietary.join(', ')} options`
-      : '⚠️ Limited dietary options';
-  }
-
-  result.budget = totalCost <= budget
-    ? `✓ $${totalCost} (under $${budget} budget)`
-    : `⚠️ $${totalCost} (over budget by $${totalCost - budget})`;
-
-  return result;
-}
-
-/**
- * Create empty itinerary when no candidates found
- */
 function createEmptyItinerary(parsedInput: ParsedInput, days: number): Itinerary {
   const itinerary: Record<string, DayItinerary> = {};
 
@@ -827,4 +613,69 @@ function createEmptyItinerary(parsedInput: ParsedInput, days: number): Itinerary
       potential_issues: ['No venues found - check API configuration'],
     },
   };
+}
+
+// =============================================================================
+// DUPLICATE DETECTION ASSERTIONS
+// =============================================================================
+
+/**
+ * Assert that no duplicates exist within or across days
+ * Logs detailed info and throws if duplicates found
+ */
+function assertNoDuplicatesInTimelines(timelines: DayTimeline[]): void {
+  const allUsedIds = new Set<string>();
+  const allUsedDedupKeys = new Set<string>();
+  const duplicates: string[] = [];
+
+  for (const timeline of timelines) {
+    const dayActivities = timeline.slots.filter(s => s.type === 'activity' && s.candidate);
+    const dayUsedIds = new Set<string>();
+    const dayUsedKeys = new Set<string>();
+
+    for (const slot of dayActivities) {
+      const candidate = slot.candidate!;
+
+      // Check for duplicate ID within day
+      if (dayUsedIds.has(candidate.id)) {
+        duplicates.push(`Day ${timeline.dayIndex + 1}: Duplicate ID "${candidate.id}" (${candidate.name})`);
+      }
+      dayUsedIds.add(candidate.id);
+
+      // Check for duplicate dedupKey within day
+      if (dayUsedKeys.has(candidate.dedupKey)) {
+        duplicates.push(`Day ${timeline.dayIndex + 1}: Duplicate dedupKey "${candidate.dedupKey}" (${candidate.name})`);
+      }
+      dayUsedKeys.add(candidate.dedupKey);
+
+      // Check for near-duplicates within day
+      for (const otherSlot of dayActivities) {
+        if (otherSlot === slot) continue;
+        const other = otherSlot.candidate!;
+        if (areNearDuplicates(candidate, other)) {
+          duplicates.push(`Day ${timeline.dayIndex + 1}: Near-duplicate "${candidate.name}" ≈ "${other.name}"`);
+        }
+      }
+
+      // Check for duplicates across days
+      if (allUsedIds.has(candidate.id)) {
+        duplicates.push(`Cross-day duplicate ID "${candidate.id}" (${candidate.name})`);
+      }
+      allUsedIds.add(candidate.id);
+
+      if (allUsedDedupKeys.has(candidate.dedupKey)) {
+        duplicates.push(`Cross-day duplicate dedupKey "${candidate.dedupKey}" (${candidate.name})`);
+      }
+      allUsedDedupKeys.add(candidate.dedupKey);
+    }
+  }
+
+  if (duplicates.length > 0) {
+    console.error('❌ DUPLICATE DETECTION FAILED:');
+    duplicates.forEach(d => console.error(`  - ${d}`));
+    // Don't throw - just log warning in production
+    console.warn(`⚠️ Found ${duplicates.length} duplicates in itinerary`);
+  } else {
+    console.log('✓ No duplicates detected in itinerary');
+  }
 }

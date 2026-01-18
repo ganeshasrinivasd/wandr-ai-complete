@@ -9,9 +9,20 @@
  * 4. User pace modifiers (relaxed/normal/packed)
  * 5. Big Rock rules (theme parks, hikes dominate a day)
  * 6. Feasibility checking and repair suggestions
+ *
+ * v2 additions:
+ * - BigRock detection with confidence scoring
+ * - Category normalization with Google types
+ * - Integration with new planning/types.ts
  */
 
 import { Candidate } from './types';
+import {
+  BigRockType,
+  BIG_ROCK_CONFIGS,
+  ActivityCategory,
+  DURATION_PRIORS as NEW_DURATION_PRIORS,
+} from '../planning/types';
 
 // ============================================================================
 // A) DURATION PRIOR TABLE
@@ -473,15 +484,27 @@ export function estimateDuration(
 
   // Step 7: Cap by opening hours if provided
   if (openingHours) {
-    const openHour = parseInt(openingHours.open.split(':')[0]);
-    const closeHour = parseInt(openingHours.close.split(':')[0]);
-    const availableMinutes = (closeHour - openHour) * 60;
+    // Safely parse opening hours with validation
+    const openParts = openingHours.open?.split(':');
+    const closeParts = openingHours.close?.split(':');
 
-    if (availableMinutes > 0 && availableMinutes < maxMinutes) {
-      maxMinutes = availableMinutes;
-      if (suggestedMinutes > availableMinutes) {
-        suggestedMinutes = Math.round(availableMinutes * 0.8); // Leave 20% buffer
-        rationale.push(`Capped by ${availableMinutes / 60}hr operating window`);
+    if (openParts?.length >= 1 && closeParts?.length >= 1) {
+      const openHour = parseInt(openParts[0], 10);
+      const closeHour = parseInt(closeParts[0], 10);
+
+      // Only use if both parsed successfully and are valid hours
+      if (!isNaN(openHour) && !isNaN(closeHour) &&
+          openHour >= 0 && openHour <= 24 &&
+          closeHour >= 0 && closeHour <= 24) {
+        const availableMinutes = (closeHour - openHour) * 60;
+
+        if (availableMinutes > 0 && availableMinutes < maxMinutes) {
+          maxMinutes = availableMinutes;
+          if (suggestedMinutes > availableMinutes) {
+            suggestedMinutes = Math.round(availableMinutes * 0.8); // Leave 20% buffer
+            rationale.push(`Capped by ${availableMinutes / 60}hr operating window`);
+          }
+        }
       }
     }
   }
@@ -758,4 +781,289 @@ export function generateTimeSlot(
   };
 
   return `${formatTime(startMinutes)}-${formatTime(endMinutes)}`;
+}
+
+// ============================================================================
+// E) V2 BIG ROCK DETECTION (New Planning System)
+// ============================================================================
+
+export interface BigRockDetectionResult {
+  isBigRock: boolean;
+  bigRockType?: BigRockType;
+  confidence: number; // 0-1
+}
+
+/**
+ * Detect if a candidate is a "big rock" using the new planning system.
+ * Big rocks are attractions that require significant time (theme parks, zoos, etc.)
+ */
+export function detectBigRockV2(candidate: {
+  name: string;
+  googleTypes?: string[];
+  reviewCount: number;
+  rating?: number;
+}): BigRockDetectionResult {
+  const nameLower = candidate.name.toLowerCase();
+  const types = new Set((candidate.googleTypes || []).map(t => t.toLowerCase()));
+
+  // Priority order for detection
+  const priorityOrder: BigRockType[] = [
+    'theme_park',
+    'water_park',
+    'safari',
+    'zoo',
+    'aquarium',
+    'major_museum',
+    'amusement_park',
+  ];
+
+  for (const brType of priorityOrder) {
+    const config = BIG_ROCK_CONFIGS[brType];
+
+    const typeMatch = config.googleTypes.some(gt => types.has(gt));
+    const nameMatch = config.nameKeywords.some(kw => nameLower.includes(kw));
+    const reviewMatch = candidate.reviewCount >= config.minReviewCount;
+
+    // Strong match: type + name (high confidence)
+    if (typeMatch && nameMatch) {
+      return { isBigRock: true, bigRockType: brType, confidence: 0.95 };
+    }
+
+    // Medium match: type + high reviews
+    if (typeMatch && reviewMatch) {
+      return { isBigRock: true, bigRockType: brType, confidence: 0.85 };
+    }
+
+    // Weak match: name + very high reviews
+    if (nameMatch && candidate.reviewCount >= config.minReviewCount * 2) {
+      return { isBigRock: true, bigRockType: brType, confidence: 0.75 };
+    }
+
+    // Name-only match with decent reviews
+    if (nameMatch && candidate.reviewCount >= config.minReviewCount * 0.5) {
+      return { isBigRock: true, bigRockType: brType, confidence: 0.6 };
+    }
+  }
+
+  return { isBigRock: false, confidence: 0 };
+}
+
+// ============================================================================
+// F) V2 DURATION PRIOR (New Planning System)
+// ============================================================================
+
+export interface DurationPriorV2 {
+  min: number;
+  max: number;
+  expected: number;
+}
+
+/**
+ * Get duration estimate using the new planning system's category priors.
+ */
+export function getDurationPriorV2(
+  category: ActivityCategory,
+  signals: {
+    reviewCount: number;
+    rating: number;
+    isBigRock: boolean;
+    bigRockType?: BigRockType;
+  },
+  pace: 'relaxed' | 'moderate' | 'packed' = 'moderate'
+): DurationPriorV2 {
+  // If big rock, use big rock config
+  if (signals.isBigRock && signals.bigRockType) {
+    const brConfig = BIG_ROCK_CONFIGS[signals.bigRockType];
+    const [min, max] = brConfig.durationRange;
+    const paceMultiplier = NEW_DURATION_PRIORS[category]?.paceMultiplier[pace] ?? 1.0;
+
+    const adjustedMin = Math.round(min * paceMultiplier);
+    const adjustedMax = Math.round(max * paceMultiplier);
+    const expected = Math.round(adjustedMin + (adjustedMax - adjustedMin) * 0.6);
+
+    return { min: adjustedMin, max: adjustedMax, expected };
+  }
+
+  // Get category prior
+  const prior = NEW_DURATION_PRIORS[category] || NEW_DURATION_PRIORS.unknown;
+  const paceMultiplier = prior.paceMultiplier[pace];
+
+  // Use high-review variant if applicable
+  const useHighReview = signals.reviewCount >= prior.reviewThreshold;
+  const [baseMin, baseMax] = useHighReview ? prior.withHighReviews : prior.base;
+
+  const min = Math.round(baseMin * paceMultiplier);
+  const max = Math.round(baseMax * paceMultiplier);
+
+  // Calculate expected based on rating
+  let ratingBias: number;
+  if (signals.rating >= 4.7) ratingBias = 0.7;
+  else if (signals.rating >= 4.5) ratingBias = 0.6;
+  else if (signals.rating >= 4.0) ratingBias = 0.5;
+  else if (signals.rating >= 3.5) ratingBias = 0.4;
+  else ratingBias = 0.35;
+
+  // Boost for very popular places
+  if (signals.reviewCount > 50000) {
+    ratingBias = Math.min(ratingBias + 0.1, 0.75);
+  } else if (signals.reviewCount > 20000) {
+    ratingBias = Math.min(ratingBias + 0.05, 0.7);
+  }
+
+  const expected = Math.round(min + (max - min) * ratingBias);
+
+  return { min, max, expected };
+}
+
+// ============================================================================
+// G) CATEGORY NORMALIZATION (New Planning System)
+// ============================================================================
+
+/**
+ * Normalize a place to a standard ActivityCategory
+ */
+export function normalizeToCategory(candidate: {
+  name: string;
+  googleTypes?: string[];
+  reviewCount?: number;
+}): { category: ActivityCategory; confidence: number } {
+  const types = new Set((candidate.googleTypes || []).map(t => t.toLowerCase()));
+  const nameLower = candidate.name.toLowerCase();
+
+  // Type-based classification (high confidence)
+  const typeMapping: [string[], ActivityCategory][] = [
+    [['theme_park', 'amusement_park'], 'theme_park'],
+    [['zoo'], 'zoo'],
+    [['aquarium'], 'aquarium'],
+    [['museum'], 'museum'],
+    [['hindu_temple', 'buddhist_temple', 'jain_temple'], 'temple'],
+    [['church'], 'church'],
+    [['mosque'], 'mosque'],
+    [['synagogue'], 'religious'],
+    [['park'], 'park'],
+    [['restaurant', 'food'], 'restaurant'],
+    [['cafe'], 'cafe'],
+    [['bar', 'night_club'], 'bar'],
+    [['shopping_mall'], 'mall'],
+    [['market', 'grocery_or_supermarket'], 'market'],
+    [['tourist_attraction', 'point_of_interest'], 'landmark'],
+    [['art_gallery'], 'museum'],
+  ];
+
+  for (const [googleTypes, category] of typeMapping) {
+    if (googleTypes.some(gt => types.has(gt))) {
+      // Check for major museum upgrade
+      if (category === 'museum' && isMajorMuseumCandidate(candidate)) {
+        return { category: 'major_museum', confidence: 0.9 };
+      }
+      return { category, confidence: 0.9 };
+    }
+  }
+
+  // Name-based classification (medium confidence)
+  const nameMapping: [RegExp, ActivityCategory][] = [
+    [/\b(fort|fortress|citadel|qila)\b/i, 'fort'],
+    [/\b(palace|mahal|haveli)\b/i, 'palace'],
+    [/\b(temple|mandir|kovil)\b/i, 'temple'],
+    [/\b(church|cathedral|chapel)\b/i, 'church'],
+    [/\b(mosque|masjid|dargah)\b/i, 'mosque'],
+    [/\b(museum)\b/i, 'museum'],
+    [/\b(garden|botanical)\b/i, 'garden'],
+    [/\b(beach)\b/i, 'beach'],
+    [/\b(lake|reservoir)\b/i, 'lake'],
+    [/\b(view\s*point|lookout|observation)\b/i, 'viewpoint'],
+    [/\b(market|bazaar|bazar)\b/i, 'market'],
+    [/\b(zoo|zoological)\b/i, 'zoo'],
+    [/\b(aquarium|oceanarium)\b/i, 'aquarium'],
+    [/\b(restaurant|kitchen|diner|eatery)\b/i, 'restaurant'],
+    [/\b(cafe|coffee|bakery)\b/i, 'cafe'],
+  ];
+
+  for (const [pattern, category] of nameMapping) {
+    if (pattern.test(nameLower)) {
+      return { category, confidence: 0.7 };
+    }
+  }
+
+  // Default
+  return { category: 'landmark', confidence: 0.4 };
+}
+
+/**
+ * Check if a museum is a major museum
+ */
+function isMajorMuseumCandidate(candidate: {
+  name: string;
+  reviewCount?: number;
+}): boolean {
+  const nameLower = candidate.name.toLowerCase();
+  const majorPatterns = [
+    /national\s+museum/i,
+    /state\s+museum/i,
+    /\b(louvre|smithsonian|british\s+museum|metropolitan|hermitage)\b/i,
+    /natural\s+history\s+museum/i,
+    /science\s+museum/i,
+  ];
+
+  return (
+    majorPatterns.some(p => p.test(nameLower)) ||
+    (candidate.reviewCount || 0) >= 30000
+  );
+}
+
+// ============================================================================
+// H) TRAVEL TIME ESTIMATION
+// ============================================================================
+
+/**
+ * Calculate haversine distance between two points in kilometers
+ */
+export function haversineDistance(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number }
+): number {
+  const R = 6371; // Earth's radius in km
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+
+  const x =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.sin(dLng / 2) * Math.sin(dLng / 2) * Math.cos(lat1) * Math.cos(lat2);
+  const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+
+  return R * c;
+}
+
+/**
+ * Estimate travel time between two points
+ * Assumes average urban speed of 20 km/h (accounting for traffic)
+ */
+export function estimateTravelTime(
+  from: { lat: number; lng: number },
+  to: { lat: number; lng: number },
+  averageSpeedKmh: number = 20
+): number {
+  const distanceKm = haversineDistance(from, to);
+  const baseMinutes = (distanceKm / averageSpeedKmh) * 60;
+
+  // Minimum 5 minutes even for very close places
+  // Add 5 minutes buffer for parking/walking
+  return Math.max(5, Math.round(baseMinutes + 5));
+}
+
+/**
+ * Format duration as human-readable string
+ */
+export function formatDurationMinutes(minutes: number): string {
+  if (minutes < 60) {
+    return `${minutes} min`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (mins === 0) {
+    return `${hours} hr`;
+  }
+  return `${hours} hr ${mins} min`;
 }
