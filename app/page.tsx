@@ -368,24 +368,7 @@ export default function HomePage() {
           ))}
         </div>
 
-        {/* Vertical Text - Right Side */}
-        <div className="absolute right-8 top-1/2 -translate-y-1/2 hidden lg:block">
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 1, delay: 1 }}
-            className="flex flex-col items-center gap-4"
-          >
-            <div className="w-px h-16 bg-gradient-to-b from-transparent via-white/30 to-transparent" />
-            <span 
-              className="text-xs tracking-[0.3em] text-white/40 transform -rotate-90 origin-center whitespace-nowrap"
-              style={{ writingMode: 'vertical-rl' }}
-            >
-              SCROLL TO EXPLORE
-            </span>
-            <div className="w-px h-16 bg-gradient-to-b from-transparent via-white/30 to-transparent" />
-          </motion.div>
-        </div>
+
       </div>
 
       {/* Preload images */}
