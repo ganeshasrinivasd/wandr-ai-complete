@@ -54,7 +54,7 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
 
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
-      style: 'mapbox://styles/mapbox/dark-v11',
+      style: 'mapbox://styles/mapbox/light-v11', // Light style for paper theme
       center: [centerLng, centerLat],
       zoom: 12,
     });
@@ -80,7 +80,6 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
 
       // Check if style is loaded
       if (!map.current.isStyleLoaded()) {
-        // Wait for style to load
         map.current.once('styledata', updateMap);
         return;
       }
@@ -109,20 +108,28 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
         const isActive = activity.activity.id === activeActivityId;
         const isMeal = activity.type === 'meal';
 
+        // Theme colors: Leather (#8B4513) active/meal, Nature (#556B2F) others
+        const activeColor = '#8B4513'; // Leather
+        const mealColor = '#556B2F'; // Nature (Olive)
+        const defaultColor = '#5D5D5B'; // Graphite (Ink/grey)
+
+        const markerColor = isMeal ? mealColor : (isActive ? activeColor : defaultColor);
+
         const el = document.createElement('div');
         el.style.cssText = `
           width: ${isActive ? '40px' : '32px'};
           height: ${isActive ? '40px' : '32px'};
-          background: ${isMeal ? '#22c55e' : '#a855f7'};
-          border: 3px solid ${isActive ? '#fff' : 'rgba(255,255,255,0.6)'};
+          background: ${markerColor};
+          border: 3px solid #F9F7F2; /* Paper color */
           border-radius: 50%;
           display: flex;
           align-items: center;
           justify-content: center;
-          color: white;
+          color: #F9F7F2;
           font-weight: bold;
+          font-family: 'Special Elite', monospace;
           font-size: ${isActive ? '16px' : '14px'};
-          box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+          box-shadow: 0 4px 8px rgba(44, 44, 44, 0.3); /* Ink shadow */
           cursor: pointer;
           transition: all 0.2s ease;
         `;
@@ -132,9 +139,12 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
           onMarkerClick?.(activity.activity.id);
         });
 
+        const popup = new mapboxgl.Popup({ offset: 25, className: 'paper-popup' })
+          .setHTML(`<div style="font-family: 'Cormorant Garamond', serif; font-weight: bold; color: #2C2C2C;">${activity.activity.name}</div>`);
+
         const marker = new mapboxgl.Marker({ element: el })
           .setLngLat([loc.lng, loc.lat])
-          .setPopup(new mapboxgl.Popup({ offset: 25 }).setHTML(`<strong>${activity.activity.name}</strong>`))
+          .setPopup(popup)
           .addTo(map.current!);
 
         markersRef.current.push(marker);
@@ -169,9 +179,10 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
               'line-cap': 'round',
             },
             paint: {
-              'line-color': '#a855f7',
-              'line-width': 4,
-              'line-opacity': 0.8,
+              'line-color': '#8B4513', // Leather color for route
+              'line-width': 3,
+              'line-opacity': 0.6,
+              'line-dasharray': [2, 1], // Dashed line for "travel map" feel
             },
           });
         } catch (e) {
@@ -197,20 +208,21 @@ export default function DayMap({ activities, onMarkerClick, activeActivityId }: 
 
   if (validActivities.length === 0) {
     return (
-      <div className="w-full h-full bg-white/5 rounded-2xl flex items-center justify-center border border-white/10">
+      <div className="w-full h-full bg-paper-card rounded-sm flex items-center justify-center border border-ink/10 shadow-inner">
         <div className="text-center p-4">
-          <Map className="w-8 h-8 text-white/20 mx-auto mb-2" />
-          <p className="text-white/40 text-sm">No location data</p>
-          <p className="text-white/30 text-xs mt-1">This plan was created before map support.</p>
-          <p className="text-purple-400 text-xs mt-2">Generate a new plan to see the route!</p>
+          <Map className="w-8 h-8 text-ink/20 mx-auto mb-2" />
+          <p className="text-ink/60 text-sm font-serif italic">No location data</p>
+          <p className="text-ink/40 text-xs mt-1 font-typewriter">This plan was created before map support.</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="w-full h-full rounded-2xl overflow-hidden border border-white/10">
-      <div ref={mapContainer} className="w-full h-full" />
+    <div className="w-full h-full rounded-sm overflow-hidden border border-ink/10 shadow-md relative">
+      {/* Map Tape Effect */}
+      <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-24 h-6 bg-[#e8e6df]/90 backdrop-blur-sm -rotate-1 shadow-sm border border-white/20 z-10" />
+      <div ref={mapContainer} className="w-full h-full grayscale-[0.2] sepia-[0.1]" />
     </div>
   );
 }

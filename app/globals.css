@@ -5,12 +5,14 @@
 /* Mapbox GL CSS */
 @import 'mapbox-gl/dist/mapbox-gl.css';
 
-/* Import premium fonts */
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&family=Outfit:wght@200;300;400;500;600&display=swap');
+/* Import premium fonts: Cormorant Garamond (Serif), Outfit (Sans), Patrick Hand (Handwritten), Special Elite (Typewriter) */
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&family=Outfit:wght@200;300;400;500;600&family=Patrick+Hand&family=Special+Elite&display=swap');
 
 :root {
   --font-display: 'Cormorant Garamond', serif;
   --font-body: 'Outfit', sans-serif;
+  --font-hand: 'Patrick Hand', cursive;
+  --font-typewriter: 'Special Elite', monospace;
 }
 
 * {
@@ -25,84 +27,103 @@ html {
 
 body {
   font-family: var(--font-body);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  background: #000;
-  color: #fff;
+  background-color: #F9F7F2;
+  background-image:
+    url("https://www.transparenttextures.com/patterns/cream-paper.png"),
+    url("https://upload.wikimedia.org/wikipedia/commons/thumb/8/8a/Mercator_1569.png/1280px-Mercator_1569.png");
+  background-repeat: repeat, no-repeat;
+  background-position: 0 0, center center;
+  background-size: auto, 120% auto;
+  background-blend-mode: normal, soft-light;
+  color: #2C2C2C;
   overflow-x: hidden;
+  position: relative;
 }
 
-/* Custom scrollbar */
+/* Vintage Map Overlay - Additional fading layer */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 0%, #F9F7F2 70%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Custom scrollbar - Leather style */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
+  background: #E8E6DF;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 3px;
+  background: #8B4513;
+  border-radius: 4px;
+  border: 2px solid #F9F7F2;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: #A0522D;
 }
 
-/* Selection color */
+/* Selection color - Highlighter style */
 ::selection {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: rgba(210, 105, 30, 0.2);
+  /* Terracotta tint */
+  color: #2C2C2C;
 }
 
-/* Smooth image loading */
+/* Images: darken slightly to blend better with paper */
 img {
   opacity: 0;
   transition: opacity 0.5s ease;
+  filter: sepia(10%);
 }
 
 img[src] {
   opacity: 1;
 }
 
-/* Glass effect utility */
-.glass {
-  background: rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+/* Paper Card utility */
+.paper-card {
+  background: #FFFFFF;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.05),
+    0 1px 2px rgba(0, 0, 0, 0.1);
+  position: relative;
 }
 
-/* Premium button hover effect */
+.paper-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("https://www.transparenttextures.com/patterns/cream-paper.png");
+  opacity: 0.5;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+  border-radius: inherit;
+}
+
+/* Torn Edge Effect (Optional utility) */
+.torn-edge {
+  mask-image: url("data:image/svg+xml,%3Csvg width='100%25' height='100%25' viewBox='0 0 100 100' preserveAspectRatio='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0 L100 0 L100 100 L0 100 Z' fill='black'/%3E%3C/svg%3E");
+  /* Simple placeholder for complex torn edge */
+}
+
+/* Premium button hover effect - Ink Fill */
 .btn-premium {
   position: relative;
   overflow: hidden;
+  transition: all 0.3s ease;
 }
 
-.btn-premium::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.2),
-    transparent
-  );
-  transition: left 0.5s ease;
-}
-
-.btn-premium:hover::before {
-  left: 100%;
-}
-
-/* Text gradient utility */
+/* Text gradient utility - Now Ink Gradient */
 .text-gradient {
-  background: linear-gradient(135deg, #fff 0%, rgba(255, 255, 255, 0.7) 100%);
+  background: linear-gradient(135deg, #2C2C2C 0%, #5D5D5B 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -114,6 +135,7 @@ img[src] {
     opacity: 0;
     transform: translateY(20px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -126,9 +148,12 @@ img[src] {
 
 /* Floating animation */
 @keyframes float {
-  0%, 100% {
+
+  0%,
+  100% {
     transform: translateY(0);
   }
+
   50% {
     transform: translateY(-10px);
   }
@@ -140,9 +165,12 @@ img[src] {
 
 /* Pulse glow effect */
 @keyframes pulseGlow {
-  0%, 100% {
+
+  0%,
+  100% {
     box-shadow: 0 0 20px rgba(255, 255, 255, 0.1);
   }
+
   50% {
     box-shadow: 0 0 40px rgba(255, 255, 255, 0.2);
   }
@@ -157,18 +185,17 @@ img[src] {
   0% {
     background-position: -200% 0;
   }
+
   100% {
     background-position: 200% 0;
   }
 }
 
 .animate-shimmer {
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.1) 25%,
-    rgba(255, 255, 255, 0.2) 50%,
-    rgba(255, 255, 255, 0.1) 75%
-  );
+  background: linear-gradient(90deg,
+      rgba(255, 255, 255, 0.1) 25%,
+      rgba(255, 255, 255, 0.2) 50%,
+      rgba(255, 255, 255, 0.1) 75%);
   background-size: 200% 100%;
   animation: shimmer 2s infinite;
 }
@@ -195,9 +222,9 @@ img[src] {
   inset: 0;
   border-radius: inherit;
   padding: 1px;
-  background: linear-gradient(135deg, rgba(255,255,255,0.3), rgba(255,255,255,0.1));
-  -webkit-mask: 
-    linear-gradient(#fff 0 0) content-box, 
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.1));
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
     linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
