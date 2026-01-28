@@ -1,26 +1,23 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence, useScroll, useTransform } from 'framer-motion';
+import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
-    Play, Globe, Search, ArrowRight, Menu, MapPin,
-    Wind, Cloud, Sun, Compass, Zap, Layers, Terminal
+    Globe, Search, ArrowRight, Menu, Compass, Zap, Layers, Sun
 } from 'lucide-react';
+import LocationAutocomplete from '@/components/LocationAutocomplete';
 
 // ==========================================
 // DATA & ASSETS
 // ==========================================
 const concepts = [
-    { id: 'cinematic', name: 'The Cinematic Portal', icon: <Play className="w-4 h-4" /> },
-    { id: 'globe', name: 'The 3D Navigator', icon: <Globe className="w-4 h-4" /> },
     { id: 'bento', name: 'The Bento Board', icon: <Layers className="w-4 h-4" /> },
     { id: 'editorial', name: 'The Storyteller', icon: <Menu className="w-4 h-4" /> },
-    { id: 'ai', name: 'The AI Architect', icon: <Zap className="w-4 h-4" /> },
-    { id: 'split', name: 'The Split Decision', icon: <Compass className="w-4 h-4" /> },
     { id: 'search', name: 'The Search Engine', icon: <Search className="w-4 h-4" /> },
-    { id: 'parallax', name: 'The Horizon', icon: <Wind className="w-4 h-4" /> },
-    { id: 'glass', name: 'Glassmorphism', icon: <Cloud className="w-4 h-4" /> },
-    { id: 'cyber', name: 'Cyber Terminal', icon: <Terminal className="w-4 h-4" /> },
+    { id: 'hybrid1', name: 'Editorial Search', icon: <Compass className="w-4 h-4" /> },
+    { id: 'hybrid2', name: 'Bento Editorial', icon: <Globe className="w-4 h-4" /> },
+    { id: 'hybrid3', name: 'The Curator', icon: <Zap className="w-4 h-4" /> },
 ];
 
 export default function MainPageConcepts() {
@@ -108,17 +105,13 @@ export default function MainPageConcepts() {
 
 function renderConcept(id: string) {
     switch (id) {
-        case 'cinematic': return <CinematicPortal />;
-        case 'globe': return <ThreeDNavigator />;
         case 'bento': return <BentoBoard />;
         case 'editorial': return <Storyteller />;
-        case 'ai': return <AIArchitect />;
-        case 'split': return <SplitDecision />;
         case 'search': return <SearchEngine />;
-        case 'parallax': return <ParallaxHorizon />;
-        case 'glass': return <Glassmorphism />;
-        case 'cyber': return <CyberTerminal />;
-        default: return <CinematicPortal />;
+        case 'hybrid1': return <EditorialSearch />;
+        case 'hybrid2': return <BentoEditorial />;
+        case 'hybrid3': return <TheCurator />;
+        default: return <BentoBoard />;
     }
 }
 
@@ -494,46 +487,438 @@ function Glassmorphism() {
     );
 }
 
-// 10. CYBER TERMINAL
-function CyberTerminal() {
-    return (
-        <div className="relative w-full h-full bg-black font-mono text-green-500 overflow-hidden p-10 flex flex-col">
-            <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_4px,3px_100%] pointer-events-none z-20 opacity-20"></div>
-            <div className="absolute inset-0 bg-green-500/5 z-0 animate-pulse"></div>
+// ==========================================
+// HYBRID CONCEPTS
+// ==========================================
 
-            <header className="flex justify-between border-b border-green-500/30 pb-4 mb-10 z-10">
-                <div>WANDR_OS v4.2</div>
-                <div>EST. CONNECT: 100%</div>
+// HYBRID 1: EDITORIAL SEARCH
+// Combines: Search Engine's centered minimal search + Storyteller's editorial typography
+function EditorialSearch() {
+    return (
+        <div className="relative w-full h-full bg-[#faf9f7] flex flex-col items-center justify-center font-serif overflow-hidden">
+            {/* Subtle texture */}
+            <div className="absolute inset-0 opacity-[0.03] bg-[url('https://www.transparenttextures.com/patterns/paper.png')]"></div>
+
+            {/* Header */}
+            <div className="absolute top-8 left-10 right-10 flex justify-between items-center text-xs tracking-widest text-stone-400 uppercase">
+                <span>Est. 2024</span>
+                <span>Travel Journal</span>
+            </div>
+
+            {/* Main Content */}
+            <div className="relative z-10 text-center max-w-3xl px-6">
+                <span className="text-xs tracking-[0.4em] text-stone-400 uppercase mb-6 block">Where will your story begin?</span>
+
+                <h1 className="text-7xl md:text-8xl font-serif text-stone-800 tracking-tight mb-4">
+                    wandr<span className="text-amber-600">.</span>
+                </h1>
+
+                <p className="text-stone-500 text-lg italic mb-12 max-w-md mx-auto">
+                    Curated journeys for the curious traveler
+                </p>
+
+                {/* Search Bar */}
+                <div className="w-full max-w-xl mx-auto relative group">
+                    <div className="relative bg-white border border-stone-200 rounded-full flex items-center p-2 transition-all duration-300 shadow-sm group-hover:shadow-md group-hover:border-stone-300">
+                        <Search className="w-5 h-5 text-stone-300 ml-4 mr-4" />
+                        <input
+                            type="text"
+                            placeholder="Search destinations, experiences..."
+                            className="flex-1 h-12 bg-transparent outline-none text-lg text-stone-700 placeholder-stone-300 font-sans"
+                        />
+                        <button className="bg-stone-800 text-white rounded-full px-8 h-10 font-sans text-sm font-medium hover:bg-stone-900 transition-colors">
+                            Explore
+                        </button>
+                    </div>
+                </div>
+
+                {/* Trending */}
+                <div className="mt-10 flex items-center justify-center gap-3 text-sm">
+                    <span className="text-stone-400 italic">Trending:</span>
+                    {['Amalfi Coast', 'Kyoto', 'Patagonia', 'Santorini'].map((place) => (
+                        <button key={place} className="px-4 py-2 border border-stone-200 rounded-full text-stone-600 hover:bg-stone-100 hover:border-stone-300 transition-all font-sans text-xs tracking-wide">
+                            {place}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {/* Footer Quote */}
+            <div className="absolute bottom-10 text-center">
+                <p className="text-stone-300 text-xs italic tracking-wide">"Not all who wander are lost"</p>
+            </div>
+        </div>
+    );
+}
+
+// HYBRID 2: BENTO EDITORIAL
+// Combines: Bento's grid cards + Storyteller's editorial typography and imagery
+function BentoEditorial() {
+    return (
+        <div className="relative w-full h-full bg-[#faf9f7] p-8 md:p-12 overflow-auto">
+            {/* Header */}
+            <header className="max-w-6xl mx-auto flex justify-between items-baseline mb-12">
+                <div>
+                    <h1 className="text-4xl font-serif text-stone-800">wandr<span className="text-amber-600">.</span></h1>
+                </div>
+                <nav className="flex gap-8 text-xs tracking-widest text-stone-400 uppercase font-sans">
+                    <a href="#" className="hover:text-stone-800 transition-colors">Destinations</a>
+                    <a href="#" className="hover:text-stone-800 transition-colors">Experiences</a>
+                    <a href="#" className="hover:text-stone-800 transition-colors">Journal</a>
+                </nav>
             </header>
 
-            <main className="flex-1 z-10 w-full max-w-4xl mx-auto">
-                <div className="mb-4">
-                    <span className="text-green-300">root@wandr:~$</span> <span className="animate-[type_3s_steps(20)_forwards]">initiate_protocol --trip="adventure"</span>
-                </div>
-                <div className="p-6 border border-green-500/30 bg-black/80 rounded-sm">
-                    <div className="mb-2 text-green-400">{'>'} SCANNING GLOBAL DATABASE...</div>
-                    <div className="mb-2 text-green-400">{'>'} 14,203 LOCATIONS FOUND</div>
-                    <div className="mb-6 text-green-400">{'>'} OPTIMIZING ROUTE... <span className="animate-pulse">DONE</span></div>
+            {/* Bento Grid with Editorial Style */}
+            <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-4 md:grid-rows-3 gap-5 min-h-[600px]">
 
-                    <div className="grid grid-cols-2 gap-4">
-                        <div className="border border-green-500/50 p-4 hover:bg-green-500/10 cursor-pointer transition-colors">
-                            <h3 className="font-bold mb-2">[01] TOKYO_NEO</h3>
-                            <div className="h-2 bg-green-900 w-full overflow-hidden">
-                                <div className="h-full bg-green-500 w-[90%]"></div>
+                {/* Search Card */}
+                <div className="md:col-span-2 md:row-span-1 bg-white rounded-2xl p-8 flex flex-col justify-center border border-stone-100 shadow-sm hover:shadow-md transition-shadow">
+                    <span className="text-xs tracking-widest text-stone-400 uppercase mb-3 font-sans">Begin Your Journey</span>
+                    <h2 className="text-2xl font-serif text-stone-800 mb-4">Where to next?</h2>
+                    <div className="flex gap-2">
+                        <div className="flex-1 flex items-center bg-stone-50 rounded-full px-4 border border-stone-100">
+                            <Search className="w-4 h-4 text-stone-300 mr-3" />
+                            <input placeholder="Search destinations..." className="bg-transparent py-3 text-sm w-full outline-none text-stone-700 placeholder-stone-300" />
+                        </div>
+                        <button className="bg-stone-800 text-white rounded-full w-12 h-12 flex items-center justify-center hover:bg-stone-900 transition-colors">
+                            <ArrowRight className="w-4 h-4" />
+                        </button>
+                    </div>
+                </div>
+
+                {/* Featured Destination - Large */}
+                <div className="md:col-span-2 md:row-span-2 rounded-2xl overflow-hidden relative group cursor-pointer shadow-sm hover:shadow-lg transition-all">
+                    <img src="https://images.unsplash.com/photo-1507525428034-b723cf961d3e?q=80&w=2073&auto=format&fit=crop" className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+                    <div className="absolute bottom-8 left-8 right-8 text-white">
+                        <span className="text-xs tracking-widest uppercase opacity-70 font-sans">Featured Destination</span>
+                        <h3 className="text-3xl font-serif mt-2">Amalfi Coast</h3>
+                        <p className="text-sm opacity-80 mt-2 font-sans">Mediterranean dreams along Italy's stunning coastline</p>
+                    </div>
+                </div>
+
+                {/* Editorial Quote Card */}
+                <div className="md:col-span-1 md:row-span-1 bg-amber-50 rounded-2xl p-6 flex flex-col justify-center border border-amber-100/50">
+                    <p className="text-amber-800/80 font-serif italic text-lg leading-relaxed">
+                        "Travel is the only thing you buy that makes you richer."
+                    </p>
+                    <span className="text-xs text-amber-600/60 mt-4 font-sans tracking-wide">— Anonymous</span>
+                </div>
+
+                {/* Stats Card */}
+                <div className="md:col-span-1 md:row-span-1 bg-stone-800 rounded-2xl p-6 flex flex-col justify-between text-white">
+                    <span className="text-xs tracking-widest text-stone-400 uppercase font-sans">Your Journey</span>
+                    <div>
+                        <div className="text-4xl font-serif">12</div>
+                        <div className="text-xs text-stone-400 font-sans">Countries explored</div>
+                    </div>
+                </div>
+
+                {/* Destination Card 2 */}
+                <div className="md:col-span-1 md:row-span-1 rounded-2xl overflow-hidden relative group cursor-pointer">
+                    <img src="https://images.unsplash.com/photo-1542259659-4abfa757262b?q=80&w=1935&auto=format&fit=crop" className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                    <div className="absolute inset-0 bg-black/30 group-hover:bg-black/20 transition-colors" />
+                    <div className="absolute bottom-4 left-4 text-white">
+                        <h3 className="font-serif text-lg">Kyoto</h3>
+                        <span className="text-xs opacity-70 font-sans">Japan</span>
+                    </div>
+                </div>
+
+                {/* Destination Card 3 */}
+                <div className="md:col-span-1 md:row-span-1 rounded-2xl overflow-hidden relative group cursor-pointer">
+                    <img src="https://images.unsplash.com/photo-1519904981063-b0cf448d479e?q=80&w=2070&auto=format&fit=crop" className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                    <div className="absolute inset-0 bg-black/30 group-hover:bg-black/20 transition-colors" />
+                    <div className="absolute bottom-4 left-4 text-white">
+                        <h3 className="font-serif text-lg">Swiss Alps</h3>
+                        <span className="text-xs opacity-70 font-sans">Switzerland</span>
+                    </div>
+                </div>
+
+                {/* CTA Card */}
+                <div className="md:col-span-2 md:row-span-1 bg-white rounded-2xl p-8 flex items-center justify-between border border-stone-100 shadow-sm hover:shadow-md transition-shadow group cursor-pointer">
+                    <div>
+                        <span className="text-xs tracking-widest text-stone-400 uppercase font-sans">New Issue</span>
+                        <h3 className="text-xl font-serif text-stone-800 mt-1">The Art of Slow Travel</h3>
+                        <p className="text-sm text-stone-500 mt-1 font-sans">Our Winter 2026 collection</p>
+                    </div>
+                    <div className="w-12 h-12 rounded-full border-2 border-stone-200 flex items-center justify-center group-hover:bg-stone-800 group-hover:border-stone-800 transition-all">
+                        <ArrowRight className="w-5 h-5 text-stone-400 group-hover:text-white transition-colors" />
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    );
+}
+
+// HYBRID 3: THE CURATOR
+// The ultimate fusion: Editorial magazine header + Centered search + Curated bento cards below
+export function TheCurator() {
+    const router = useRouter();
+    const [searchFocused, setSearchFocused] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
+
+    const handleSearch = (e?: React.FormEvent) => {
+        e?.preventDefault();
+        if (searchQuery.trim()) {
+            router.push(`/planner?destination=${encodeURIComponent(searchQuery.trim())}`);
+        } else {
+            router.push('/planner');
+        }
+    };
+
+    const handleDestinationClick = (destination: string) => {
+        router.push(`/planner?destination=${encodeURIComponent(destination)}`);
+    };
+
+    const handleGetStarted = () => {
+        router.push('/planner');
+    };
+
+    return (
+        <div className="relative w-full h-full bg-[#FAFAF8] overflow-auto">
+            {/* Subtle gradient overlay */}
+            <div className="absolute inset-0 bg-gradient-to-b from-white/50 via-transparent to-stone-100/30 pointer-events-none" />
+
+            {/* Refined Header */}
+            <header className="relative z-10 px-6 md:px-12 py-5 flex justify-between items-center border-b border-stone-100">
+                <div className="flex items-center gap-8">
+                    <button onClick={() => router.push('/')} className="text-2xl font-serif text-stone-800 tracking-tight hover:opacity-70 transition-opacity">
+                        wandr<span className="text-amber-500">.</span>
+                    </button>
+                    <nav className="hidden md:flex gap-6 text-[13px] text-stone-500 font-medium">
+                        <button onClick={handleGetStarted} className="hover:text-stone-900 transition-colors">Destinations</button>
+                        <button onClick={handleGetStarted} className="hover:text-stone-900 transition-colors">Experiences</button>
+                        <button onClick={handleGetStarted} className="hover:text-stone-900 transition-colors">Journal</button>
+                    </nav>
+                </div>
+                <div className="flex items-center gap-4">
+                    <button className="text-[13px] text-stone-500 hover:text-stone-900 transition-colors font-medium">
+                        Sign In
+                    </button>
+                    <button
+                        onClick={handleGetStarted}
+                        className="hidden sm:block bg-stone-900 text-white text-[13px] px-5 py-2.5 rounded-full font-medium hover:bg-stone-800 transition-colors"
+                    >
+                        Get Started
+                    </button>
+                </div>
+            </header>
+
+            {/* Hero Section */}
+            <section className="relative z-10 text-center pt-16 md:pt-24 pb-16 md:pb-20 px-6">
+                <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.6 }}
+                >
+                    <p className="text-amber-600 text-xs tracking-[0.3em] uppercase font-medium mb-4">Curated Travel Intelligence</p>
+                    <h1 className="text-5xl md:text-6xl lg:text-7xl font-serif text-stone-800 tracking-tight mb-4 leading-[1.1]">
+                        Where will your<br />
+                        <span className="italic text-stone-400">story</span> begin?
+                    </h1>
+                    <p className="text-stone-500 text-base md:text-lg max-w-md mx-auto mb-10 font-light">
+                        Discover handpicked destinations and experiences tailored to curious travelers.
+                    </p>
+                </motion.div>
+
+                {/* Search Bar */}
+                <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.6, delay: 0.2 }}
+                    className="w-full max-w-2xl mx-auto relative"
+                >
+                    {/* Glow effect */}
+                    <div className={`absolute -inset-2 bg-gradient-to-r from-amber-200/40 via-stone-200/40 to-amber-200/40 rounded-3xl blur-xl transition-opacity duration-500 ${searchFocused ? 'opacity-100' : 'opacity-0'}`} />
+
+                    <div className={`relative bg-white border rounded-2xl flex items-center p-2 shadow-sm transition-all duration-300 ${searchFocused ? 'border-stone-300 shadow-lg' : 'border-stone-200'}`}>
+                        <Search className={`w-5 h-5 ml-4 mr-3 transition-colors duration-300 ${searchFocused ? 'text-stone-500' : 'text-stone-300'}`} />
+                        <div className="flex-1"
+                            onFocus={() => setSearchFocused(true)}
+                            onBlur={() => setSearchFocused(false)}
+                        >
+                            <LocationAutocomplete
+                                value={searchQuery}
+                                onChange={setSearchQuery}
+                                onSubmit={handleSearch}
+                                onSelect={(prediction) => {
+                                    setSearchQuery(prediction.description);
+                                    handleDestinationClick(prediction.description);
+                                }}
+                                placeholder="Search destinations, experiences, or travel styles..."
+                                variant="hero"
+                            />
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => handleSearch()}
+                            className="bg-stone-900 text-white rounded-xl px-6 md:px-8 h-11 text-sm font-medium hover:bg-stone-800 active:scale-[0.98] transition-all"
+                        >
+                            Explore
+                        </button>
+                    </div>
+
+                    {/* Quick Tags */}
+                    <div className="mt-5 flex items-center justify-center gap-2 flex-wrap">
+                        <span className="text-stone-400 text-xs mr-1">Popular:</span>
+                        {['Bali', 'Tokyo', 'Paris', 'Santorini'].map((tag, i) => (
+                            <motion.button
+                                key={tag}
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ duration: 0.4, delay: 0.4 + i * 0.1 }}
+                                onClick={() => handleDestinationClick(tag)}
+                                className="px-4 py-2 bg-white border border-stone-200 rounded-full text-stone-600 hover:bg-stone-50 hover:border-stone-300 hover:text-stone-900 transition-all text-xs font-medium"
+                            >
+                                {tag}
+                            </motion.button>
+                        ))}
+                    </div>
+                </motion.div>
+            </section>
+
+            {/* Divider */}
+            <div className="max-w-6xl mx-auto px-6 md:px-12 mb-8">
+                <div className="border-t border-stone-200" />
+                <div className="flex justify-between items-center mt-5">
+                    <div className="flex items-center gap-3">
+                        <div className="w-1.5 h-1.5 bg-amber-500 rounded-full" />
+                        <span className="text-xs tracking-widest text-stone-500 uppercase font-medium">Curated For You</span>
+                    </div>
+                    <button className="text-xs text-stone-500 hover:text-stone-900 transition-colors font-medium flex items-center gap-2 group">
+                        View All <ArrowRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
+                    </button>
+                </div>
+            </div>
+
+            {/* Curated Bento Grid */}
+            <section className="max-w-6xl mx-auto px-6 md:px-12 pb-12">
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-4 md:gap-5 auto-rows-[200px]">
+
+                    {/* Large Featured Card */}
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.5, delay: 0.1 }}
+                        onClick={() => handleDestinationClick('New Zealand')}
+                        className="md:col-span-8 md:row-span-2 rounded-2xl overflow-hidden relative group cursor-pointer shadow-sm hover:shadow-xl transition-all duration-500"
+                    >
+                        <img src="https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1?q=80&w=2070&auto=format&fit=crop" className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" alt="New Zealand" />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+                        <div className="absolute top-5 left-5">
+                            <span className="bg-white/95 backdrop-blur-sm text-stone-800 px-3 py-1.5 rounded-full text-xs font-semibold shadow-sm">Editor's Pick</span>
+                        </div>
+                        <div className="absolute bottom-6 left-6 right-6 text-white">
+                            <span className="text-xs tracking-widest uppercase opacity-70 font-medium">New Zealand</span>
+                            <h3 className="text-2xl md:text-3xl font-serif mt-1.5 mb-2">The South Island</h3>
+                            <p className="text-sm opacity-80 max-w-md leading-relaxed hidden sm:block">Dramatic fjords, ancient glaciers, and endless adventure await in one of Earth's most pristine landscapes.</p>
+                            <div className="mt-4 opacity-0 group-hover:opacity-100 transform translate-y-2 group-hover:translate-y-0 transition-all duration-300">
+                                <span className="inline-flex items-center gap-2 text-xs font-medium border border-white/30 rounded-full px-4 py-2 hover:bg-white/10 transition-colors">
+                                    Explore Destination <ArrowRight className="w-3 h-3" />
+                                </span>
                             </div>
                         </div>
-                        <div className="border border-green-500/50 p-4 hover:bg-green-500/10 cursor-pointer transition-colors">
-                            <h3 className="font-bold mb-2">[02] BERLIN_UNDERG</h3>
-                            <div className="h-2 bg-green-900 w-full overflow-hidden">
-                                <div className="h-full bg-green-500 w-[75%]"></div>
-                            </div>
+                    </motion.div>
+
+                    {/* Small Card 1 - Maldives */}
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.5, delay: 0.2 }}
+                        onClick={() => handleDestinationClick('Maldives')}
+                        className="md:col-span-4 rounded-2xl overflow-hidden relative group cursor-pointer shadow-sm hover:shadow-lg transition-all duration-500"
+                    >
+                        <img src="https://images.unsplash.com/photo-1507525428034-b723cf961d3e?q=80&w=2073&auto=format&fit=crop" className="absolute inset-0 w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" alt="Maldives" />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent group-hover:from-black/70 transition-colors duration-300" />
+                        <div className="absolute bottom-5 left-5 right-5 text-white">
+                            <h3 className="font-serif text-xl group-hover:translate-x-1 transition-transform duration-300">Maldives</h3>
+                            <span className="text-xs opacity-70 font-medium">Island Paradise</span>
+                        </div>
+                    </motion.div>
+
+                    {/* Small Card 2 - Kyoto */}
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.5, delay: 0.3 }}
+                        onClick={() => handleDestinationClick('Kyoto, Japan')}
+                        className="md:col-span-4 rounded-2xl overflow-hidden relative group cursor-pointer shadow-sm hover:shadow-lg transition-all duration-500"
+                    >
+                        <img src="https://images.unsplash.com/photo-1542259659-4abfa757262b?q=80&w=1935&auto=format&fit=crop" className="absolute inset-0 w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" alt="Kyoto" />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent group-hover:from-black/70 transition-colors duration-300" />
+                        <div className="absolute bottom-5 left-5 right-5 text-white">
+                            <h3 className="font-serif text-xl group-hover:translate-x-1 transition-transform duration-300">Kyoto</h3>
+                            <span className="text-xs opacity-70 font-medium">Ancient Traditions</span>
+                        </div>
+                    </motion.div>
+
+                    {/* Quote Card */}
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.5, delay: 0.4 }}
+                        className="md:col-span-4 bg-stone-900 rounded-2xl p-6 flex flex-col justify-center text-white relative overflow-hidden group"
+                    >
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/10 rounded-full blur-2xl group-hover:bg-amber-500/20 transition-colors duration-500" />
+                        <p className="font-serif italic text-lg leading-relaxed opacity-95 relative z-10">
+                            "The world is a book, and those who do not travel read only one page."
+                        </p>
+                        <span className="text-xs text-stone-400 mt-4 font-medium relative z-10">— Saint Augustine</span>
+                    </motion.div>
+
+                    {/* Small Card 3 - Patagonia */}
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.5, delay: 0.5 }}
+                        onClick={() => handleDestinationClick('Patagonia, Argentina')}
+                        className="md:col-span-4 rounded-2xl overflow-hidden relative group cursor-pointer shadow-sm hover:shadow-lg transition-all duration-500"
+                    >
+                        <img src="https://images.unsplash.com/photo-1519904981063-b0cf448d479e?q=80&w=2070&auto=format&fit=crop" className="absolute inset-0 w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" alt="Patagonia" />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent group-hover:from-black/70 transition-colors duration-300" />
+                        <div className="absolute bottom-5 left-5 right-5 text-white">
+                            <h3 className="font-serif text-xl group-hover:translate-x-1 transition-transform duration-300">Patagonia</h3>
+                            <span className="text-xs opacity-70 font-medium">Wild Frontier</span>
+                        </div>
+                    </motion.div>
+
+                    {/* CTA Card */}
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.5, delay: 0.6 }}
+                        onClick={handleGetStarted}
+                        className="md:col-span-4 bg-gradient-to-br from-amber-50 to-orange-50 rounded-2xl p-6 flex flex-col justify-center border border-amber-100/80 group cursor-pointer hover:shadow-md transition-all duration-300 relative overflow-hidden"
+                    >
+                        <div className="absolute -bottom-8 -right-8 w-32 h-32 bg-amber-200/40 rounded-full blur-2xl" />
+                        <span className="text-xs tracking-widest text-amber-700/70 uppercase font-semibold mb-2 relative z-10">This Season</span>
+                        <h3 className="font-serif text-xl text-amber-900 mb-2 relative z-10">Winter Escapes</h3>
+                        <p className="text-sm text-amber-800/70 mb-4 leading-relaxed relative z-10">Curated warm-weather getaways</p>
+                        <span className="text-xs font-semibold text-amber-900 flex items-center gap-2 group-hover:gap-3 transition-all relative z-10">
+                            Explore Collection <ArrowRight className="w-3 h-3" />
+                        </span>
+                    </motion.div>
+
+                </div>
+            </section>
+
+            {/* Footer */}
+            <footer className="relative z-10 border-t border-stone-200 bg-white/50 backdrop-blur-sm">
+                <div className="max-w-6xl mx-auto px-6 md:px-12 py-8">
+                    <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+                        <div className="flex items-center gap-6">
+                            <span className="text-xl font-serif text-stone-800">wandr<span className="text-amber-500">.</span></span>
+                            <span className="text-xs text-stone-400">Curated Travel Intelligence</span>
+                        </div>
+                        <div className="flex items-center gap-6 text-xs text-stone-500">
+                            <a href="#" className="hover:text-stone-900 transition-colors">About</a>
+                            <a href="#" className="hover:text-stone-900 transition-colors">Contact</a>
+                            <a href="#" className="hover:text-stone-900 transition-colors">Privacy</a>
+                            <span className="text-stone-300">© 2026</span>
                         </div>
                     </div>
                 </div>
-            </main>
-
-            <footer className="z-10 text-xs text-green-700 mt-10">
-                SYSTEM_ID: WDR-992-X // TERMINAL_ACTIVE
             </footer>
         </div>
     );

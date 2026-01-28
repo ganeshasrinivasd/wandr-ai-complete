@@ -15,9 +15,11 @@ interface LocationAutocompleteProps {
   value: string;
   onChange: (value: string) => void;
   onSelect?: (prediction: Prediction) => void;
+  onSubmit?: () => void;
   placeholder?: string;
   className?: string;
   required?: boolean;
+  variant?: 'default' | 'hero';
 }
 
 // Curated destination data for rich previews
@@ -200,10 +202,13 @@ export default function LocationAutocomplete({
   value,
   onChange,
   onSelect,
+  onSubmit,
   placeholder = 'Search any destination...',
   className = '',
   required = false,
+  variant = 'default',
 }: LocationAutocompleteProps) {
+  const isHero = variant === 'hero';
   const [predictions, setPredictions] = useState<Prediction[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
@@ -346,23 +351,38 @@ export default function LocationAutocomplete({
     };
   }, []);
 
+  // Handle Enter key for submission
+  const handleKeyDownWithSubmit = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !isOpen && onSubmit) {
+      e.preventDefault();
+      onSubmit();
+      return;
+    }
+    handleKeyDown(e);
+  };
+
   return (
     <div className="relative">
       <div className="relative">
-        <Globe2 className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-leather opacity-60" />
+        {!isHero && (
+          <Globe2 className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-leather opacity-60" />
+        )}
         <input
           ref={inputRef}
           type="text"
           value={value}
           onChange={handleInputChange}
-          onKeyDown={handleKeyDown}
+          onKeyDown={handleKeyDownWithSubmit}
           onFocus={handleFocus}
           placeholder={placeholder}
           required={required}
-          className={`w-full pl-12 pr-10 py-4 bg-paper-card border border-ink/10 rounded-sm text-ink text-lg placeholder:text-ink/30 focus:outline-none focus:border-leather focus:ring-1 focus:ring-leather/20 focus:bg-white transition-all shadow-sm font-typewriter ${className}`}
+          className={isHero
+            ? `w-full h-12 bg-transparent outline-none text-base md:text-lg text-stone-700 placeholder-stone-400 ${className}`
+            : `w-full pl-12 pr-10 py-4 bg-paper-card border border-ink/10 rounded-sm text-ink text-lg placeholder:text-ink/30 focus:outline-none focus:border-leather focus:ring-1 focus:ring-leather/20 focus:bg-white transition-all shadow-sm font-typewriter ${className}`
+          }
           autoComplete="off"
         />
-        {isLoading && (
+        {isLoading && !isHero && (
           <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-leather animate-spin" />
         )}
       </div>
@@ -376,13 +396,22 @@ export default function LocationAutocomplete({
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.2 }}
             ref={dropdownRef}
-            className="absolute z-50 w-full mt-3 bg-paper-card border border-ink/10 rounded-sm shadow-xl overflow-hidden"
+            className={isHero
+              ? "absolute z-50 w-full mt-4 bg-white border border-stone-200 rounded-2xl shadow-xl overflow-hidden"
+              : "absolute z-50 w-full mt-3 bg-paper-card border border-ink/10 rounded-sm shadow-xl overflow-hidden"
+            }
           >
-            <div className="px-4 py-3 border-b border-ink/10 flex items-center gap-2 bg-paper-dark">
-              <TrendingUp className="w-4 h-4 text-leather" />
-              <span className="text-xs text-ink/50 tracking-wider font-bold">TRENDING DESTINATIONS</span>
+            <div className={isHero
+              ? "px-4 py-3 border-b border-stone-100 flex items-center gap-2 bg-stone-50"
+              : "px-4 py-3 border-b border-ink/10 flex items-center gap-2 bg-paper-dark"
+            }>
+              <TrendingUp className={isHero ? "w-4 h-4 text-amber-600" : "w-4 h-4 text-leather"} />
+              <span className={isHero
+                ? "text-xs text-stone-500 tracking-wider font-semibold"
+                : "text-xs text-ink/50 tracking-wider font-bold"
+              }>TRENDING DESTINATIONS</span>
             </div>
-            <div className="p-2 bg-paper-card">
+            <div className={isHero ? "p-2 bg-white" : "p-2 bg-paper-card"}>
               {TRENDING_DESTINATIONS.map((dest) => {
                 const data = DESTINATION_DATA[dest.key];
                 return (
@@ -390,22 +419,40 @@ export default function LocationAutocomplete({
                     key={dest.key}
                     type="button"
                     onClick={() => handleTrendingSelect(dest.name)}
-                    className="w-full p-3 text-left rounded-sm hover:bg-paper-dark transition-all group flex items-center gap-4 border border-transparent hover:border-ink/5"
+                    className={isHero
+                      ? "w-full p-3 text-left rounded-xl hover:bg-stone-50 transition-all group flex items-center gap-4"
+                      : "w-full p-3 text-left rounded-sm hover:bg-paper-dark transition-all group flex items-center gap-4 border border-transparent hover:border-ink/5"
+                    }
                   >
-                    <div className="w-16 h-12 rounded-sm overflow-hidden flex-shrink-0 bg-ink/5 border border-ink/10">
+                    <div className={isHero
+                      ? "w-16 h-12 rounded-lg overflow-hidden flex-shrink-0 bg-stone-100"
+                      : "w-16 h-12 rounded-sm overflow-hidden flex-shrink-0 bg-ink/5 border border-ink/10"
+                    }>
                       {data?.photo && (
                         <img
                           src={data.photo}
                           alt={dest.name}
-                          className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 sepia-[.3]"
+                          className={isHero
+                            ? "w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                            : "w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 sepia-[.3]"
+                          }
                         />
                       )}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-ink font-serif font-bold text-lg">{dest.name}</div>
-                      <div className="text-ink/50 text-xs italic truncate font-serif">{data?.tagline}</div>
+                      <div className={isHero
+                        ? "text-stone-800 font-serif font-semibold text-base"
+                        : "text-ink font-serif font-bold text-lg"
+                      }>{dest.name}</div>
+                      <div className={isHero
+                        ? "text-stone-400 text-xs truncate"
+                        : "text-ink/50 text-xs italic truncate font-serif"
+                      }>{data?.tagline}</div>
                     </div>
-                    <div className="text-xs text-leather bg-paper-dark border border-ink/10 px-2 py-1 rounded-sm font-typewriter">
+                    <div className={isHero
+                      ? "text-xs text-amber-700 bg-amber-50 border border-amber-100 px-2 py-1 rounded-full font-medium"
+                      : "text-xs text-leather bg-paper-dark border border-ink/10 px-2 py-1 rounded-sm font-typewriter"
+                    }>
                       {data?.vibe}
                     </div>
                   </button>
@@ -425,14 +472,23 @@ export default function LocationAutocomplete({
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.2 }}
             ref={dropdownRef}
-            className="absolute z-50 w-full mt-3"
+            className={isHero ? "absolute z-50 w-full mt-4" : "absolute z-50 w-full mt-3"}
           >
             <div className="flex gap-3">
               {/* Predictions List */}
-              <div className="flex-1 bg-paper-card border border-ink/10 rounded-sm shadow-xl overflow-hidden">
-                <div className="px-4 py-2 border-b border-ink/10 flex items-center gap-2 bg-paper-dark">
-                  <MapPin className="w-3 h-3 text-leather" />
-                  <span className="text-xs text-ink/40 tracking-wider font-bold">DESTINATIONS</span>
+              <div className={isHero
+                ? "flex-1 bg-white border border-stone-200 rounded-2xl shadow-xl overflow-hidden"
+                : "flex-1 bg-paper-card border border-ink/10 rounded-sm shadow-xl overflow-hidden"
+              }>
+                <div className={isHero
+                  ? "px-4 py-2 border-b border-stone-100 flex items-center gap-2 bg-stone-50"
+                  : "px-4 py-2 border-b border-ink/10 flex items-center gap-2 bg-paper-dark"
+                }>
+                  <MapPin className={isHero ? "w-3 h-3 text-amber-600" : "w-3 h-3 text-leather"} />
+                  <span className={isHero
+                    ? "text-xs text-stone-500 tracking-wider font-semibold"
+                    : "text-xs text-ink/40 tracking-wider font-bold"
+                  }>DESTINATIONS</span>
                 </div>
                 {predictions.map((prediction, index) => (
                   <button
@@ -440,19 +496,27 @@ export default function LocationAutocomplete({
                     type="button"
                     onClick={() => handleSelect(prediction)}
                     onMouseEnter={() => setHighlightedIndex(index)}
-                    className={`w-full px-4 py-3 text-left flex items-start gap-3 transition-all ${index === highlightedIndex
-                        ? 'bg-paper-dark'
-                        : 'hover:bg-paper-dark/50'
-                      }`}
+                    className={isHero
+                      ? `w-full px-4 py-3 text-left flex items-start gap-3 transition-all ${index === highlightedIndex ? 'bg-stone-50' : 'hover:bg-stone-50/50'}`
+                      : `w-full px-4 py-3 text-left flex items-start gap-3 transition-all ${index === highlightedIndex ? 'bg-paper-dark' : 'hover:bg-paper-dark/50'}`
+                    }
                   >
-                    <MapPin className={`w-4 h-4 mt-0.5 flex-shrink-0 transition-colors ${index === highlightedIndex ? 'text-leather' : 'text-ink/30'
-                      }`} />
+                    <MapPin className={isHero
+                      ? `w-4 h-4 mt-0.5 flex-shrink-0 transition-colors ${index === highlightedIndex ? 'text-amber-600' : 'text-stone-300'}`
+                      : `w-4 h-4 mt-0.5 flex-shrink-0 transition-colors ${index === highlightedIndex ? 'text-leather' : 'text-ink/30'}`
+                    } />
                     <div className="min-w-0">
-                      <div className="text-ink font-serif font-bold text-lg truncate">
+                      <div className={isHero
+                        ? "text-stone-800 font-serif font-semibold text-base truncate"
+                        : "text-ink font-serif font-bold text-lg truncate"
+                      }>
                         {prediction.mainText}
                       </div>
                       {prediction.secondaryText && (
-                        <div className="text-ink/40 text-sm truncate font-typewriter">
+                        <div className={isHero
+                          ? "text-stone-400 text-sm truncate"
+                          : "text-ink/40 text-sm truncate font-typewriter"
+                        }>
                           {prediction.secondaryText}
                         </div>
                       )}
@@ -470,48 +534,66 @@ export default function LocationAutocomplete({
                     animate={{ opacity: 1, x: 0, scale: 1 }}
                     exit={{ opacity: 0, x: 20, scale: 0.95 }}
                     transition={{ duration: 0.2 }}
-                    className="hidden md:block w-72 bg-paper-card border border-ink/10 rounded-sm shadow-xl overflow-hidden"
+                    className={isHero
+                      ? "hidden md:block w-72 bg-white border border-stone-200 rounded-2xl shadow-xl overflow-hidden"
+                      : "hidden md:block w-72 bg-paper-card border border-ink/10 rounded-sm shadow-xl overflow-hidden"
+                    }
                   >
                     {/* Preview Image */}
                     <div className="relative h-36 overflow-hidden">
                       <img
                         src={previewData.photo}
                         alt={highlightedPrediction?.mainText}
-                        className="w-full h-full object-cover sepia-[.2]"
+                        className={isHero ? "w-full h-full object-cover" : "w-full h-full object-cover sepia-[.2]"}
                       />
-                      <div className="absolute inset-0 bg-gradient-to-t from-paper to-transparent opacity-90" />
+                      <div className={isHero
+                        ? "absolute inset-0 bg-gradient-to-t from-white to-transparent opacity-90"
+                        : "absolute inset-0 bg-gradient-to-t from-paper to-transparent opacity-90"
+                      } />
                       <div className="absolute bottom-3 left-3 right-3">
-                        <div className="text-ink font-serif font-bold text-xl">
+                        <div className={isHero
+                          ? "text-stone-800 font-serif font-bold text-xl"
+                          : "text-ink font-serif font-bold text-xl"
+                        }>
                           {highlightedPrediction?.mainText}
                         </div>
-                        <div className="text-ink/60 text-sm italic font-hand">
+                        <div className={isHero
+                          ? "text-stone-500 text-sm italic"
+                          : "text-ink/60 text-sm italic font-hand"
+                        }>
                           {previewData.tagline}
                         </div>
                       </div>
                     </div>
 
                     {/* Preview Details */}
-                    <div className="p-4 space-y-3 bg-paper-card">
+                    <div className={isHero ? "p-4 space-y-3 bg-white" : "p-4 space-y-3 bg-paper-card"}>
                       {/* Vibe & Best Time */}
                       <div className="flex items-center justify-between text-sm">
                         <div className="flex items-center gap-2">
-                          <Sparkles className="w-3 h-3 text-leather" />
-                          <span className="text-ink/60 font-serif italic">Vibe:</span>
-                          <span className="text-leather font-bold">{previewData.vibe}</span>
+                          <Sparkles className={isHero ? "w-3 h-3 text-amber-600" : "w-3 h-3 text-leather"} />
+                          <span className={isHero ? "text-stone-500 italic" : "text-ink/60 font-serif italic"}>Vibe:</span>
+                          <span className={isHero ? "text-amber-700 font-semibold" : "text-leather font-bold"}>{previewData.vibe}</span>
                         </div>
-                        <div className="text-ink/40 text-xs font-typewriter">
+                        <div className={isHero ? "text-stone-400 text-xs" : "text-ink/40 text-xs font-typewriter"}>
                           Best: {previewData.bestTime}
                         </div>
                       </div>
 
                       {/* Highlights */}
                       <div>
-                        <div className="text-xs text-ink/40 mb-2 tracking-wider font-bold">HIGHLIGHTS</div>
+                        <div className={isHero
+                          ? "text-xs text-stone-400 mb-2 tracking-wider font-semibold"
+                          : "text-xs text-ink/40 mb-2 tracking-wider font-bold"
+                        }>HIGHLIGHTS</div>
                         <div className="flex flex-wrap gap-1.5">
                           {previewData.highlights.map((highlight) => (
                             <span
                               key={highlight}
-                              className="text-xs px-2 py-1 bg-paper-dark text-ink/70 rounded-sm border border-ink/10 font-hand font-bold"
+                              className={isHero
+                                ? "text-xs px-2 py-1 bg-stone-100 text-stone-600 rounded-full"
+                                : "text-xs px-2 py-1 bg-paper-dark text-ink/70 rounded-sm border border-ink/10 font-hand font-bold"
+                              }
                             >
                               {highlight}
                             </span>

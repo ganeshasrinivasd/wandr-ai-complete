@@ -51,12 +51,13 @@ function PlannerPageContent() {
 
 
   const theme = searchParams.get('theme') || 'inventor';
+  const destinationParam = searchParams.get('destination') || '';
 
   const [step, setStep] = useState(1);
   const [bgIndex, setBgIndex] = useState(0);
   const [dismissedConflicts, setDismissedConflicts] = useState<string[]>([]);
   const [formData, setFormData] = useState({
-    destination: '',
+    destination: destinationParam,
     dates: '',
     budget: '100',
     travelers: '1',
@@ -64,6 +65,13 @@ function PlannerPageContent() {
     interests: [] as string[],
     special_requests: '',
   });
+
+  // Update destination if URL param changes
+  useEffect(() => {
+    if (destinationParam && destinationParam !== formData.destination) {
+      setFormData(prev => ({ ...prev, destination: destinationParam }));
+    }
+  }, [destinationParam]);
 
   const toggleConstraint = (id: string) => {
     setFormData((prev) => ({
