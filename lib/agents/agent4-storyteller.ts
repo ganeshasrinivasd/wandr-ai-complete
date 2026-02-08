@@ -7,6 +7,69 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
+/**
+ * Trim itinerary to only the fields the storyteller LLM needs.
+ * Removes photo URLs, lat/lng, internal IDs, upvote counts, etc.
+ */
+function trimItineraryForLLM(itinerary: Itinerary) {
+  const trimmedItinerary: Record<string, any> = {};
+
+  for (const [key, day] of Object.entries(itinerary.itinerary)) {
+    trimmedItinerary[key] = {
+      day: day.day,
+      date: day.date,
+      theme: day.theme,
+      neighborhood: day.neighborhood,
+      activities: day.activities.map(a => {
+        const trimmed: any = {
+          time: a.time,
+          type: a.type,
+          activity: {
+            name: a.activity.name,
+            duration_minutes: a.activity.duration_minutes,
+            cost: a.activity.cost,
+            ...(a.activity.description && { description: a.activity.description }),
+            ...(a.activity.reddit_quote && { reddit_quote: a.activity.reddit_quote }),
+            ...(a.activity.accessibility_notes && { accessibility_notes: a.activity.accessibility_notes }),
+            ...(a.activity.vegan_details && { vegan_details: a.activity.vegan_details }),
+          },
+        };
+        if (a.travel) {
+          trimmed.travel = {
+            mode: a.travel.mode,
+            duration_minutes: a.travel.duration_minutes,
+          };
+        }
+        return trimmed;
+      }),
+      day_summary: {
+        total_cost: day.day_summary.total_cost,
+      },
+    };
+  }
+
+  return {
+    itinerary: trimmedItinerary,
+    overall_summary: {
+      total_budget: itinerary.overall_summary.total_budget,
+      avg_per_day: itinerary.overall_summary.avg_per_day,
+      constraint_compliance: itinerary.overall_summary.constraint_compliance,
+    },
+  };
+}
+
+/**
+ * Format constraints as a compact readable string instead of JSON.
+ */
+function formatConstraints(constraints: { accessibility: string[]; dietary: string[]; pace: string; other: string[] }): string {
+  const parts: string[] = [];
+  if (constraints.accessibility.length > 0) parts.push(`accessibility: ${constraints.accessibility.join(', ')}`);
+  if (constraints.dietary.length > 0) parts.push(`dietary: ${constraints.dietary.join(', ')}`);
+  parts.push(`pace: ${constraints.pace}`);
+  if (constraints.other.length > 0) parts.push(`other: ${constraints.other.join(', ')}`);
+  return parts.join(' | ');
+}
+
 const AGENT4_SYSTEM_PROMPT = `You are a travel writer creating personalized itineraries.
 
 Your job:
@@ -51,10 +114,10 @@ export async function runAgent4Storyteller(
 DESTINATION: ${destination.city}, ${destination.country}
 DURATION: ${parsedInput.parsed_data.dates.duration_days} days
 BUDGET: $${parsedInput.parsed_data.budget.amount_per_day}/day
-CONSTRAINTS: ${JSON.stringify(constraints)}
+CONSTRAINTS: ${formatConstraints(constraints)}
 
 ITINERARY DATA:
-${JSON.stringify(itinerary, null, 2)}
+${JSON.stringify(trimItineraryForLLM(itinerary))}
 
 Write in second person ("You'll start your day...").
 Include Reddit quotes where available.
@@ -221,10 +284,10 @@ export async function runAgent4StorytellerV3(
 DESTINATION: ${destination.city}, ${destination.country}
 DURATION: ${parsedInput.parsed_data.dates.duration_days} days
 BUDGET: ${parsedInput.parsed_data.budget.amount_per_day}/day
-CONSTRAINTS: ${JSON.stringify(constraints)}
+CONSTRAINTS: ${formatConstraints(constraints)}
 
 ITINERARY DATA:
-${JSON.stringify(itinerary, null, 2)}
+${JSON.stringify(trimItineraryForLLM(itinerary))}
 ${mealPlaceholderInfo}
 ${assumptionsText}
 
